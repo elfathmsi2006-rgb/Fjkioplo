@@ -1,0 +1,9 @@
+{
+  "name": "SPA EL FATH CMMS",
+  "short_name": "EL FATH",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#12233b",
+  "theme_color": "#12233b",
+  "icons": []
+}

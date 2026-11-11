@@ -1,0 +1,26 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap');
+:root {
+  font-family: 'IBM Plex Sans Arabic', 'DM Sans', sans-serif;
+  color-scheme: light;
+  --accent: #3268d5; --accent-rgb: 50,104,213; --accent-soft: #eaf1ff;
+  --success: #1d9b70; --danger: #df5961; --warning: #d99528; --info: #4c7de0;
+  --bg: #f4f7fb; --surface: #ffffff; --surface-raised: #ffffff; --surface-soft: #f7f9fc;
+  --text: #1b2a41; --text-strong: #17253b; --muted: #7c899c; --border: #e7edf5;
+  --nav-bg: #11233d; --nav-text: #afbed2; --shadow: 0 8px 30px rgba(21,42,76,.055);
+  --shadow-lg: 0 24px 70px rgba(15,31,55,.18); --radius-sm: 8px; --radius: 12px; --radius-lg: 17px;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px; --space-6: 24px; --space-8: 32px;
+  --transition: 180ms cubic-bezier(.2,.7,.2,1);
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b1220; --surface: #121c2c; --surface-raised: #182437; --surface-soft: #101a2a;
+  --text: #c2cede; --text-strong: #f2f6fc; --muted: #8c9bb1; --border: #263449;
+  --nav-bg: #080f1b; --nav-text: #a2b0c5; --accent-soft: #1a2b4c;
+  --shadow: 0 8px 30px rgba(0,0,0,.12); --shadow-lg: 0 24px 70px rgba(0,0,0,.42);
+}
+:root[data-accent="teal"] { --accent:#168c88; --accent-rgb:22,140,136; --accent-soft:#e3f7f5; }
+:root[data-theme="dark"][data-accent="teal"] { --accent-soft:#143b3a; }
+:root[data-accent="violet"] { --accent:#7757d9; --accent-rgb:119,87,217; --accent-soft:#f0ebff; }
+:root[data-theme="dark"][data-accent="violet"] { --accent-soft:#2d244c; }
+:root[data-accent="amber"] { --accent:#b87816; --accent-rgb:184,120,22; --accent-soft:#fff4dc; }
+:root[data-theme="dark"][data-accent="amber"] { --accent-soft:#3d2d14; }
