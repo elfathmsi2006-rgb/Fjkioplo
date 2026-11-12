@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { useSearchParams } from 'react-router-dom'
 import { Activity, AlertTriangle, Archive, ClipboardCheck, Download, FileText, Plus, RefreshCw, ShieldCheck, Trash2, Wrench, Users, Pencil, X } from 'lucide-react'
 import { useApp } from '../app/AppProvider'
+import { csvRow } from '../utils/format'
 import { cacheTasks, loadCachedTasks, queueTaskUpdate, syncPendingTaskUpdates } from '../utils/offlineTasks'
 import { PageHeader } from '../components/ui/PageHeader'
 
@@ -155,7 +156,7 @@ export default function OperationsHubPage() {
   }
   const exportCsv = () => {
     const fields = current.fields.map(field => field.key)
-    const csv = [fields, ...rows.map(row => fields.map(key => String(row[key] ?? '')))].map(line => line.map(value => `"${value.replaceAll('"', '""')}"`).join(',')).join('\r\n')
+    const csv = [fields, ...rows.map(row => fields.map(key => String(row[key] ?? '')))].map(line => csvRow(line)).join('\r\n')
     const url = URL.createObjectURL(new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8' })); const a = document.createElement('a'); a.href = url; a.download = `spa-el-fath-${active}.csv`; a.click(); URL.revokeObjectURL(url)
   }
   const valueFor = (row: RecordRow, field: Field) => {

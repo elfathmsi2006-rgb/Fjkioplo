@@ -4,7 +4,7 @@ import { Download, Eye, LayoutGrid, List, Pencil, Plus, Search, Trash2, X, Check
 import { useApp } from '../app/AppProvider'
 import { useTranslation } from '../hooks/useTranslation'
 import type { Machine, MachineStatus } from '../data/types'
-import { localizedMachineName, localizedWorkshopName, downloadText, formatDate } from '../utils/format'
+import { localizedMachineName, localizedWorkshopName, downloadText, csvRow, formatDate } from '../utils/format'
 import { PageHeader } from '../components/ui/PageHeader'
 import { MetricCard } from '../components/ui/MetricCard'
 import { StatusBadge } from '../components/ui/StatusBadge'
@@ -226,7 +226,7 @@ async function removeMachine() {
 
   function exportCsv(items = filtered) {
     const rows = [[t('code'), t('arabicName'), t('frenchName'), t('englishName'), t('workshop'), t('status'), t('category'), t('lastMaintenance'), t('nextMaintenance')], ...items.map(machine => [machine.code, machine.name, machine.nameFr, machine.nameEn, workshops.find(workshop => workshop.id === machine.workshopId)?.name ?? '', machine.status, machine.category, machine.lastMaintenance, machine.nextMaintenance ?? ''])]
-    const csv = '\ufeff' + rows.map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\r\n')
+    const csv = '\ufeff' + rows.map(row => csvRow(row)).join('\r\n')
     downloadText('spa-el-fath-machines.csv', csv, 'text/csv;charset=utf-8')
   }
   function toggleSort(key: typeof sortKey) { if (sortKey === key) setSortDesc(value => !value); else { setSortKey(key); setSortDesc(false) } }

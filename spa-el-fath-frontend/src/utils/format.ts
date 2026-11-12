@@ -27,3 +27,15 @@ export function downloadText(filename: string, content: string, mime = 'text/pla
   anchor.click()
   URL.revokeObjectURL(url)
 }
+
+// Spreadsheets execute cells that start with =, +, - or @. User supplied
+// values are neutralised before they reach a CSV export.
+export function csvCell(value: unknown): string {
+  const text = value == null ? '' : String(value)
+  const guarded = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text
+  return guarded.replace(/"/g, '""')
+}
+
+export function csvRow(values: unknown[], delimiter = ','): string {
+  return values.map(value => `"${csvCell(value)}"`).join(delimiter)
+}

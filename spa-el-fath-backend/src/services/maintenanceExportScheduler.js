@@ -21,7 +21,15 @@ function isValidExportTime(value) {
 }
 
 function isValidTimezone(value) {
-  return typeof value === 'string' && value.trim().length >= 2 && value.trim().length <= 64;
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 2 || trimmed.length > 64) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: trimmed });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isValidRetention(value) {
@@ -51,17 +59,42 @@ function periodKey(frequency, timeZone, date) {
   return `M:${parts.year}-${String(parts.month + 1).padStart(2, '0')}`;
 }
 
+// Identity of the period a timestamp belongs to. Unlike the display key this
+// must stay stable for the whole period, otherwise a weekly schedule would
+// become due again on every new day.
+function periodIdentity(frequency, timeZone, date) {
+  const parts = timezoneParts(timeZone, date);
+  if (frequency === 'daily') {
+    return `D:${parts.year}-${String(parts.month + 1).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+  }
+  if (frequency === 'weekly') {
+    const target = Date.UTC(parts.year, parts.month, parts.day);
+    const weekIndex = Math.floor((target - Date.UTC(parts.year, 0, 1)) / (7 * 86400000));
+    return `W:${parts.year}-${weekIndex}`;
+  }
+  return `M:${parts.year}-${String(parts.month + 1).padStart(2, '0')}`;
+}
+
 function isScheduleDue(schedule, now = new Date()) {
   if (!schedule || !schedule.enabled) return false;
   if (!isValidFrequency(schedule.frequency)) return false;
-  const current = periodKey(schedule.frequency, schedule.timezone, now);
-  const last = schedule.last_run_at ? periodKey(schedule.frequency, schedule.timezone, new Date(schedule.last_run_at)) : null;
+  const current = periodIdentity(schedule.frequency, schedule.timezone, now);
+  const last = schedule.last_run_at
+    ? periodIdentity(schedule.frequency, schedule.timezone, new Date(schedule.last_run_at))
+    : null;
   return last === null || last < current;
 }
 
 function resolveExportFileName(date = new Date()) {
   const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
   return `spa-el-fath-maintenance-${stamp}.xlsx`;
+}
+
+// Stored exports must not collide between schedules or runs, otherwise a later
+// run overwrites the file an earlier execution still points at.
+function resolveStoredExportFileName(scheduleId, date = new Date()) {
+  const stamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
+  return `spa-el-fath-maintenance-${stamp}-schedule${scheduleId}.xlsx`;
 }
 
 async function listExportSchedules() {
@@ -111,7 +144,8 @@ async function updateExportSchedule(id, patch) {
   if (patch.frequency !== undefined) {
     if (!isValidFrequency(patch.frequency)) throw new Error('Invalid export frequency.');
     fields.push('frequency = ?');
-    values.push(patch.frequency);
+    // Store the canonical lowercase form so period comparisons stay consistent.
+    values.push(String(patch.frequency).toLowerCase());
   }
   if (patch.exportTime !== undefined) {
     if (!isValidExportTime(patch.exportTime)) throw new Error('Export time must be a valid HH:MM value.');
@@ -216,7 +250,7 @@ async function applyRetention(schedule) {
 
 async function runExportSchedule(schedule, triggeredBy = 'SCHEDULER') {
   const startedAt = new Date();
-  const fileName = resolveExportFileName();
+  const fileName = resolveStoredExportFileName(schedule.id, startedAt);
   const { buffer, missing, fileName: generatedName, dataSets } = await generateMaintenanceExport();
   const filePath = path.join(EXPORT_DIR, fileName);
   const fileSize = buffer ? buffer.length : null;
@@ -325,7 +359,10 @@ async function getExportExecution(id) {
 async function downloadExportExecution(id) {
   const execution = await getExportExecution(id);
   if (!execution) return { status: 'NOT_FOUND', execution };
-  const filePath = path.join(EXPORT_DIR, execution.filename);
+  // Never resolve a stored filename outside the export directory.
+  const fileName = path.basename(String(execution.filename || ''));
+  if (!fileName || fileName !== String(execution.filename)) return { status: 'FILE_MISSING', execution };
+  const filePath = path.join(EXPORT_DIR, fileName);
   if (!fs.existsSync(filePath)) return { status: 'FILE_MISSING', execution };
   const content = fs.readFileSync(filePath);
   return { status: 'OK', execution, content };
@@ -341,6 +378,7 @@ module.exports = {
   isScheduleDue,
   periodKey,
   resolveExportFileName,
+  resolveStoredExportFileName,
   startExportScheduler,
   stopExportScheduler,
   runDueExportSchedules,

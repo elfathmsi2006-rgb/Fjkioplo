@@ -89,8 +89,11 @@ function numberOrNull(value) {
   return Number.isInteger(number) ? number : NaN;
 }
 
-function getMachineInput(body) {
-  const status = body.status ?? body.state ?? 'working';
+// `previous` holds the stored row for updates. Fields the client did not send
+// keep their stored value instead of being reset to NULL.
+function getMachineInput(body, previous = null) {
+  const has = key => previous !== null && body[key] === undefined;
+  const status = body.status ?? body.state ?? (previous ? previous.state : 'working');
 
   const allowedStatuses = new Set([
     'working',
@@ -131,26 +134,28 @@ function getMachineInput(body) {
   }
 
   const machine = {
-    code: textOrNull(body.code),
-    name: textOrNull(body.name),
-    name_fr: textOrNull(body.nameFr ?? body.name_fr),
-    name_en: textOrNull(body.nameEn ?? body.name_en),
-    manufacturer: textOrNull(body.manufacturer),
-    model: textOrNull(body.model),
-    serial_number: textOrNull(body.serialNumber ?? body.serial_number),
+    code: body.code === undefined ? (previous ? previous.code : null) : textOrNull(body.code),
+    name: body.name === undefined ? (previous ? previous.name : null) : textOrNull(body.name),
+    name_fr: body.nameFr === undefined && body.name_fr === undefined ? (previous ? previous.name_fr : null) : textOrNull(body.nameFr ?? body.name_fr),
+    name_en: body.nameEn === undefined && body.name_en === undefined ? (previous ? previous.name_en : null) : textOrNull(body.nameEn ?? body.name_en),
+    manufacturer: body.manufacturer === undefined ? (previous ? previous.manufacturer : null) : textOrNull(body.manufacturer),
+    model: body.model === undefined ? (previous ? previous.model : null) : textOrNull(body.model),
+    serial_number: body.serialNumber === undefined && body.serial_number === undefined ? (previous ? previous.serial_number : null) : textOrNull(body.serialNumber ?? body.serial_number),
     production_line_position: position,
     production_line_id: productionLineId,
     install_date: installDate,
     next_maintenance_date: nextMaintenanceDate,
-    m_type: textOrNull(body.category ?? body.m_type),
-    start_year: textOrNull(body.startYear ?? body.start_year ?? (installDate ? installDate.slice(0, 4) : null)),
-    listed_state: textOrNull(body.listedState ?? body.listed_state),
+    m_type: body.category === undefined && body.m_type === undefined ? (previous ? previous.m_type : null) : textOrNull(body.category ?? body.m_type),
+    start_year: body.startYear === undefined && body.start_year === undefined
+      ? (previous ? (installDate && installDate !== String(previous.install_date || '').slice(0, 10) ? installDate.slice(0, 4) : previous.start_year) : (installDate ? installDate.slice(0, 4) : null))
+      : textOrNull(body.startYear ?? body.start_year),
+    listed_state: body.listedState === undefined && body.listed_state === undefined ? (previous ? previous.listed_state : null) : textOrNull(body.listedState ?? body.listed_state),
     state: status,
-    intervention_nbr: intervention,
-    quantity,
-    notes: textOrNull(body.notes),
-    workshop_id: workshopId,
-    workshop_name: textOrNull(body.workshopName ?? body.workshop_name),
+    intervention_nbr: body.interventionNbr === undefined && body.intervention_nbr === undefined ? (previous ? previous.intervention_nbr : null) : intervention,
+    quantity: body.quantity === undefined ? (previous ? previous.quantity : null) : quantity,
+    notes: body.notes === undefined ? (previous ? previous.notes : null) : textOrNull(body.notes),
+    workshop_id: body.workshopId === undefined && body.workshop_id === undefined ? (previous ? previous.workshop_id : null) : workshopId,
+    workshop_name: body.workshopName === undefined && body.workshop_name === undefined ? (previous ? previous.workshop_name : null) : textOrNull(body.workshopName ?? body.workshop_name),
   };
 
   if (!machine.code || !machine.name) {
@@ -269,9 +274,6 @@ router.put('/:id', canEdit, async (req, res) => {
 
   let connection;
   try {
-    const machine = await validateWorkshop(getMachineInput(req.body));
-    const columns = await getMachineColumns();
-    if (!requireOptionalColumns(columns, machine, res)) return;
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
@@ -287,6 +289,14 @@ router.put('/:id', canEdit, async (req, res) => {
       });
     }
     const previousMachine = existingRows[0];
+
+    // Unsent fields keep their stored value instead of being wiped to NULL.
+    const machine = await validateWorkshop(getMachineInput(req.body, previousMachine));
+    const columns = await getMachineColumns();
+    if (!requireOptionalColumns(columns, machine, res)) {
+      await connection.rollback();
+      return;
+    }
 
     const assignments = ['code = ?', 'name = ?', 'workshop_name = ?', 'manufacturer = ?', 'model = ?', 'serial_number = ?', 'production_line_id = ?', 'production_line_position = ?', 'm_type = ?', 'start_year = ?', 'listed_state = ?', 'state = ?', 'intervention_nbr = ?', 'quantity = ?', 'notes = ?', 'workshop_id = ?'];
     const values = [machine.code, machine.name, machine.workshop_name, machine.manufacturer, machine.model, machine.serial_number, machine.production_line_id, machine.production_line_position, machine.m_type, machine.start_year, machine.listed_state, machine.state, machine.intervention_nbr, machine.quantity, machine.notes, machine.workshop_id];

@@ -4,7 +4,6 @@ import type { Role } from '../data/types'
 const ADMIN_ONLY = new Set(['/users', '/settings', '/analytics', '/audit-trail'])
 const TECHNICIAN_PATHS = new Set(['/', '/machines', '/workshops', '/maintenance', '/operations', '/warehouse', '/account'])
 const WORKSHOP_HEAD_PATHS = new Set(['/', '/machines', '/workshops', '/maintenance', '/warehouse', '/account', '/copilot', '/hidden-failures'])
-
 export function canAccessPath(role: Role | null | undefined, pathname: string): boolean {
   if (!role) return false
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : '/'

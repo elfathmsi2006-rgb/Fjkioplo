@@ -55,13 +55,31 @@ async function writeAudit({ id, status, note, actorId, previousStatus }) {
   }
 }
 
+// Detection is expensive (it re-reads every evidence table), so a short-lived
+// server cache prevents a full re-scan on every page load. `refresh=true`
+// forces an immediate re-scan.
+const SYNC_TTL_MS = 60 * 1000;
+const lastSyncAt = new Map();
+
+function shouldSync(windowDays, force) {
+  if (force) return true;
+  const previous = lastSyncAt.get(windowDays);
+  const now = Date.now();
+  if (previous !== undefined && now - previous < SYNC_TTL_MS) return false;
+  lastSyncAt.set(windowDays, now);
+  return true;
+}
+
 router.get('/', async (req, res) => {
   const windowDays = normalizeWindow(req.query.windowDays);
-  const skipSync = String(req.query.refresh || '').toLowerCase() === 'false';
+  const refresh = String(req.query.refresh || '').toLowerCase();
+  const skipSync = refresh === 'false';
 
   try {
     let sync = null;
-    if (!skipSync) sync = await syncHiddenFailures({ windowDays });
+    if (!skipSync && shouldSync(windowDays, refresh === 'true')) {
+      sync = await syncHiddenFailures({ windowDays });
+    }
 
     const [findings, machineRisks] = await Promise.all([
       listPersistedFindings({ statuses: ACTIVE_STATUSES, windowDays }),
@@ -122,7 +140,10 @@ router.patch('/:id', async (req, res) => {
     return res.status(400).json({ success: false, message: 'Invalid finding id.' });
   }
   const status = String(req.body?.status || '').toUpperCase();
-  const note = req.body?.note == null ? null : String(req.body.note).trim().slice(0, 1000);
+  // An absent note keeps the stored note; an explicit null clears it.
+  const note = req.body && 'note' in req.body
+    ? (req.body.note == null ? null : String(req.body.note).trim().slice(0, 1000))
+    : undefined;
   if (!VALID_STATUSES.has(status)) {
     return res.status(400).json({ success: false, message: 'Status must be OPEN, ACKNOWLEDGED, REVIEW or RESOLVED.' });
   }
@@ -145,28 +166,34 @@ router.patch('/:id', async (req, res) => {
     }
 
     const now = new Date();
-    const fields = ['status = ?', 'note = ?'];
-    const params = [status, note];
+    // The auth middleware exposes the user id as `sub`; `req.user.id` is undefined.
+    const actorId = Number(req.user.sub);
+    const fields = ['status = ?'];
+    const params = [status];
+    if (note !== undefined) {
+      fields.push('note = ?');
+      params.push(note);
+    }
     if (status === 'ACKNOWLEDGED') {
       fields.push('acknowledged_by = ?', 'acknowledged_at = ?');
-      params.push(req.user.id, now);
+      params.push(actorId, now);
     }
     if (status === 'REVIEW') {
       fields.push('reviewed_by = ?', 'reviewed_at = ?');
-      params.push(req.user.id, now);
+      params.push(actorId, now);
     }
     if (status === 'RESOLVED') {
       fields.push('resolved_by = ?', 'resolved_at = ?');
-      params.push(req.user.id, now);
+      params.push(actorId, now);
     }
     if (status === 'OPEN') {
       fields.push('resolved_by = NULL', 'resolved_at = NULL', 'reviewed_by = NULL', 'reviewed_at = NULL');
     }
     params.push(id);
     await pool.execute(`UPDATE cmms_hidden_failure_findings SET ${fields.join(', ')} WHERE id = ?`, params);
-    await writeAudit({ id, status, note, actorId: req.user.id, previousStatus: current.status });
+    await writeAudit({ id, status, note: note ?? null, actorId, previousStatus: current.status });
 
-    return res.json({ success: true, data: { id, status, previousStatus: current.status, note } });
+    return res.json({ success: true, data: { id, status, previousStatus: current.status, note: note ?? null } });
   } catch (error) {
     if (error.code === 'ER_NO_SUCH_TABLE') {
       return res.status(503).json({ success: false, message: 'Hidden failure storage is not installed. Apply the Phase 4 migration.' });

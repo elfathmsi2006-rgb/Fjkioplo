@@ -3,7 +3,7 @@ import { Activity, Download, RefreshCw, Search, ShieldCheck, ChevronDown, Chevro
 import { useApp } from '../app/AppProvider'
 import { useTranslation } from '../hooks/useTranslation'
 import { PageHeader } from '../components/ui/PageHeader'
-import { downloadText } from '../utils/format'
+import { downloadText, csvRow } from '../utils/format'
 
 type AuditEvent = { id: number; table_name: string; record_id: string; action: string; actor_id: string | null; created_at: string; old_data: unknown; new_data: unknown }
 const pretty = (value: unknown) => value == null ? '—' : JSON.stringify(value, null, 2)
@@ -29,7 +29,7 @@ export default function AuditTrailPage() {
       if (!response.ok || !result.success) throw new Error(result.message || words.audit)
       setEvents((result.data ?? []).map((row: Record<string, unknown>) => {
         const details = row.details ?? null
-        return { id: Number(row.id), table_name: String(row.entity_type ?? 'system'), record_id: String(row.entity_id ?? '—'), action: String(row.action ?? 'EVENT'), actor_id: row.actor_user_id == null ? null : String(row.actor_user_id), created_at: String(row.created_at), old_data: null, new_data: details }
+        return { id: Number(row.id), table_name: String(row.entity_type ?? 'system'), record_id: String(row.entity_id ?? '—'), action: String(row.action ?? 'EVENT'), actor_id: row.actor_user_id == null ? null : String(row.actor_user_id), created_at: String(row.created_at), old_data: row.old_data ?? null, new_data: details }
       }))
     } catch (queryError) { setError(queryError instanceof Error ? queryError.message : words.audit); setEvents([]) }
     finally { setLoading(false) }
@@ -45,7 +45,7 @@ export default function AuditTrailPage() {
   const tableLabel = (value: string) => ({ maintenance_logs: t('maintenance'), machines: t('machines'), workshops: t('workshops'), work_orders: isAr ? 'أوامر العمل' : 'Work orders', spare_parts: isAr ? 'قطع الغيار' : 'Spare parts' }[value] ?? value)
   const exportCsv = () => {
     const rows = [['id','created_at','action','table','record_id','actor_id','old_data','new_data'], ...filtered.map(e => [e.id,e.created_at,e.action,e.table_name,e.record_id,e.actor_id ?? '',pretty(e.old_data),pretty(e.new_data)])]
-    downloadText('spa-el-fath-audit-trail.csv', rows.map(row => row.map(v => `"${String(v).replaceAll('"','""')}"`).join(';')).join('\r\n'), 'text/csv;charset=utf-8')
+    downloadText('spa-el-fath-audit-trail.csv', rows.map(row => csvRow(row, ';')).join('\r\n'), 'text/csv;charset=utf-8')
   }
   return <section className="page-section">
     <PageHeader eyebrow={t('auditTrail')} title={isAr ? 'سجل التدقيق الشامل' : language === 'fr' ? 'Journal d’audit complet' : 'Complete audit trail'} description={isAr ? 'تتبّع من أنشأ أو عدّل أو حذف السجلات، مع مقارنة القيم قبل التغيير وبعده.' : 'Trace who created, changed or deleted records, including before/after snapshots.'} action={<><button className="button button-secondary" onClick={exportCsv} disabled={!filtered.length}><Download size={16}/>{words.export}</button><button className="button button-primary" onClick={() => void load()}><RefreshCw size={16}/>{words.refresh}</button></>} />

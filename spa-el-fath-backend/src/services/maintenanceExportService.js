@@ -147,11 +147,14 @@ async function collectDataSets() {
     }
   };
 
-  await collect('Maintenance Logs', `SELECT id, machine_id AS machineId, machine_name AS machineName, technician_id AS technicianId, NULL AS technicianName,
-        workshop_id AS workshopId, maintenance_type AS maintenanceType, cost, duration_hours AS durationHours,
-        problem_description AS problemDescription, work_performed AS workPerformed, diagnosis, started_at AS startedAt,
-        completed_at AS completedAt, downtime_start AS downtimeStart, downtime_end AS downtimeEnd, created_at AS createdAt, updated_at AS updatedAt
-      FROM maintenance_logs`);
+  await collect('Maintenance Logs', `SELECT l.id, l.machine_id AS machineId, l.machine_name AS machineName, l.technician_id AS technicianId,
+        COALESCE(NULLIF(u.full_name, ''), th.name) AS technicianName,
+        l.workshop_id AS workshopId, l.maintenance_type AS maintenanceType, l.cost, l.duration_hours AS durationHours,
+        l.problem_description AS problemDescription, l.work_performed AS workPerformed, l.diagnosis, l.started_at AS startedAt,
+        l.completed_at AS completedAt, l.downtime_start AS downtimeStart, l.downtime_end AS downtimeEnd, l.created_at AS createdAt, l.updated_at AS updatedAt
+      FROM maintenance_logs l
+      LEFT JOIN technicians th ON th.id = l.technician_id
+      LEFT JOIN users u ON u.id = th.user_id`);
 
   await collect('Work Orders', `SELECT t.id, t.title, t.maintenance_type AS maintenanceType, t.machine_id AS machineId,
         m.code AS machineCode, m.name AS machineName, t.technician_id AS technicianId, th.name AS technicianName,
@@ -165,7 +168,7 @@ async function collectDataSets() {
   await collect('Breakdown Reports', `SELECT b.id, b.machine_id AS machineId, m.code AS machineCode, m.name AS machineName,
         b.task_id AS taskId, b.reported_at AS reportedAt, b.severity, b.symptom, b.root_cause, b.corrective_action AS correctiveAction,
         b.outcome, b.downtime_minutes AS downtimeMinutes, b.reported_by AS reportedBy, b.created_at AS createdAt
-      FROM cmss_breakdown_reports b
+      FROM cmms_breakdown_reports b
       LEFT JOIN machines m ON m.id = b.machine_id`);
 
   await collect('Preventive Plans', `SELECT p.id, p.machine_id AS machineId, m.code AS machineCode, m.name AS machineName,
@@ -174,7 +177,7 @@ async function collectDataSets() {
       FROM cmms_preventive_plans p
       LEFT JOIN machines m ON m.id = p.machine_id`);
 
-  await collect('PM Occurrences', `SELECT o.id, o.plan_id AS planId, p.title AS planTitle, o.machine_id AS machineId,
+  await collect('PM Occurrences', `SELECT o.id, o.plan_id AS planId, p.title AS planTitle, p.machine_id AS machineId,
         m.code AS machineCode, m.name AS machineName, o.due_at AS dueAt, o.task_id AS taskId, t.status AS taskStatus,
         o.occurrence_status AS occurrenceStatus, o.created_at AS createdAt
       FROM cmms_pm_occurrences o
@@ -182,7 +185,7 @@ async function collectDataSets() {
       LEFT JOIN machines m ON m.id = p.machine_id
       LEFT JOIN maintenance_tasks t ON t.id = o.task_id`);
 
-  await collect('PM Checklist Items', `SELECT i.id, i.plan_id AS planId, p.title AS planTitle, i.machine_id AS machineId, i.title,
+  await collect('PM Checklist Items', `SELECT i.id, i.plan_id AS planId, p.title AS planTitle, p.machine_id AS machineId, i.title,
         i.required, i.unit, i.minimum_value AS minimumValue, i.maximum_value AS maximumValue, i.sort_order AS sortOrder,
         i.active, i.created_at AS createdAt
       FROM cmms_pm_checklist_items i
@@ -191,7 +194,7 @@ async function collectDataSets() {
   await collect('Work Order Checklist Results', `SELECT r.id, r.task_id AS taskId, t.title AS taskTitle, t.machine_id AS machineId,
         r.checklist_item_id AS checklistItemId, i.title AS checklistItemTitle, r.result, r.measured_value AS measuredValue,
         r.notes, r.completed_by AS completedBy, r.completed_at AS completedAt
-      FROM cmss_work_order_checklist_results r
+      FROM cmms_work_order_checklist_results r
       LEFT JOIN maintenance_tasks t ON t.id = r.task_id
       LEFT JOIN cmms_pm_checklist_items i ON i.id = r.checklist_item_id`);
 
@@ -246,7 +249,7 @@ async function collectDataSets() {
       LEFT JOIN machines m ON m.id = d.machine_id`);
 
   await collect('Maintenance Log Attachments', `SELECT a.id, a.maintenance_log_id AS maintenanceLogId, l.machine_id AS machineId,
-        m.code AS machineCode, l.title AS logTitle, a.attachment_type AS attachmentType, a.original_filename AS originalFilename,
+        m.code AS machineCode, l.description AS logTitle, a.attachment_type AS attachmentType, a.original_filename AS originalFilename,
         a.storage_key AS storageKey, a.mime_type AS mimeType, a.size_bytes AS sizeBytes, a.sha256, a.created_at AS createdAt
       FROM maintenance_log_attachments a
       LEFT JOIN maintenance_logs l ON l.id = a.maintenance_log_id

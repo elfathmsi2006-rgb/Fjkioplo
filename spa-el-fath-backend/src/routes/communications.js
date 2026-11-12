@@ -42,11 +42,11 @@ function currentUserId(req) {
   return id;
 }
 
-function requireAdmin(req, res) {
-  if (req.user?.role !== 'admin') {
-    res.status(403).json({ success: false, message: 'Administrator permission is required.' });
-    return false;
-  }
+// Inline guard for route handlers that are already behind the router-level
+// administrator middleware but still assert the role defensively.
+function denyUnlessAdmin(req, res) {
+  if (req.user?.role === 'admin') return false;
+  res.status(403).json({ success: false, message: 'Administrator permission is required.' });
   return true;
 }
 
@@ -352,7 +352,7 @@ router.get('/gmail/messages/:id', async (req, res) => {
 // Sends a real test message to the currently connected administrator Gmail account.
 router.post('/gmail/test', async (req, res) => {
   try {
-    if (!requireAdmin(req, res)) return;
+    if (denyUnlessAdmin(req, res)) return;
     const userId = currentUserId(req);
     const { connection, gmail } = await loadConnectedGmail(userId);
     if (!connection.google_email) {
@@ -387,7 +387,7 @@ const NOTIFICATION_TYPES = [
 // GET /api/communications/notifications/settings
 router.get('/notifications/settings', async (req, res) => {
   try {
-    if (!requireAdmin(req, res)) return;
+    if (denyUnlessAdmin(req, res)) return;
     const [rows] = await pool.execute(
       'SELECT notification_type, enabled, updated_at FROM maintenance_notification_settings ORDER BY notification_type'
     );
@@ -400,7 +400,7 @@ router.get('/notifications/settings', async (req, res) => {
 // PUT /api/communications/notifications/settings/:type
 router.put('/notifications/settings/:type', async (req, res) => {
   try {
-    if (!requireAdmin(req, res)) return;
+    if (denyUnlessAdmin(req, res)) return;
     const type = String(req.params.type || '').toUpperCase();
     if (!NOTIFICATION_TYPES.includes(type)) {
       return res.status(400).json({ success: false, message: 'Invalid notification type.' });
@@ -425,7 +425,7 @@ router.put('/notifications/settings/:type', async (req, res) => {
 // Administrator-only delivery history for the CMMS email notification queue.
 router.get('/notifications', async (req, res) => {
   try {
-    if (!requireAdmin(req, res)) return;
+    if (denyUnlessAdmin(req, res)) return;
     const limit = Math.min(200, Math.max(1, Number.parseInt(req.query.limit, 10) || 50));
     const [rows] = await pool.execute(
       `SELECT n.id, n.notification_type, n.recipient_email, n.message,

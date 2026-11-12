@@ -71,11 +71,11 @@ export default function HiddenFailuresPage() {
   const [notes, setNotes] = useState<Record<number, string>>({})
   const [openEvidence, setOpenEvidence] = useState<number | null>(null)
 
-  const load = useCallback(async (days: number) => {
+  const load = useCallback(async (days: number, force = false) => {
     setLoading(true)
     setError('')
     try {
-      const response = await fetch(`${API}/api/hidden-failures?windowDays=${days}`, { credentials: 'include' })
+      const response = await fetch(`${API}/api/hidden-failures?windowDays=${days}${force ? '&refresh=true' : ''}`, { credentials: 'include' })
       const body = await response.json().catch(() => null)
       if (!response.ok || !body?.success) {
         throw new Error(body?.message || (ar ? 'تعذّر تحميل كاشف الأعطال الخفية.' : fr ? 'Impossible de charger le détecteur.' : 'Could not load the hidden failure center.'))
@@ -167,7 +167,7 @@ export default function HiddenFailuresPage() {
                 {WINDOWS.map(days => <option key={days} value={days}>{days} {t3('يوم', 'jours', 'days')}</option>)}
               </select>
             </label>
-            <button className="button button-secondary" type="button" onClick={() => void load(windowDays)} disabled={loading}>
+            <button className="button button-secondary" type="button" onClick={() => void load(windowDays, true)} disabled={loading}>
               <RefreshCw size={15} /> {loading ? '…' : t3('تحديث', 'Actualiser', 'Refresh')}
             </button>
           </div>

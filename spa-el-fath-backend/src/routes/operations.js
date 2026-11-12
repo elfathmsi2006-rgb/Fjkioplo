@@ -59,7 +59,7 @@ router.get('/stock-movements', async(req,res)=>{try{const [rows]=await pool.exec
 
 // Production records: role-limited writes and validated quality quantities.
 router.get('/production-records', async(req,res)=>{if(!['admin','production_chief'].includes(req.user?.role))return res.status(403).json({success:false,message:'Permission denied.'});try{const [rows]=await pool.execute('SELECT * FROM production_records ORDER BY production_date DESC,id DESC LIMIT 5000');return res.json({success:true,data:rows});}catch(e){return fail(res,e,'Could not retrieve production records.');}});
-router.post('/production-records', async(req,res)=>{if(!['admin','production_chief'].includes(req.user?.role))return res.status(403).json({success:false,message:'Permission denied.'});let c;try{const b=req.body||{}, date=text(b.date??b.productionDate,'production date',10), product=text(b.product,'product',200), shift=b.shift||'day', target=positive(b.target,'target quantity',true), produced=positive(b.produced,'produced quantity',true), accepted=positive(b.accepted,'accepted quantity',true), rejected=positive(b.rejected??0,'rejected quantity',true);if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new Error('Invalid production date.');if(!['day','evening','night'].includes(shift))throw new Error('Invalid shift.');if(accepted+rejected>produced)throw new Error('Invalid quality quantities.');const time=v=>v?(/^([01]\d|2[0-3]):[0-5]\d$/.test(v)?v+':00':(()=>{throw new Error('Invalid time.')})()):null;if(b.machineId||b.machine_id){const [ms]=await pool.execute('SELECT state FROM machines WHERE id=? LIMIT 1',[b.machineId||b.machine_id]);if(ms.length && String(ms[0].state).toLowerCase()==='broken')throw new Error('Selected machine is currently broken or out of service.');}c=await pool.getConnection();const [r]=await c.execute('INSERT INTO production_records (production_date,shift,product,workshop_id,machine_id,target_quantity,produced_quantity,accepted_quantity,rejected_quantity,start_time,end_time,notes,created_by_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',[date,shift,product,b.workshopId||null,b.machineId||null,target,produced,accepted,rejected,time(b.startTime),time(b.endTime),text(b.notes,'notes',5000,true),actorId(req)]);await audit(c,req,'CREATE','production_record',r.insertId,{date,product,produced});return res.status(201).json({success:true,data:{id:r.insertId}});}catch(e){return fail(res,e,'Could not create production record.');}});
+router.post('/production-records', async(req,res)=>{if(!['admin','production_chief'].includes(req.user?.role))return res.status(403).json({success:false,message:'Permission denied.'});let c;try{const b=req.body||{}, date=text(b.date??b.productionDate,'production date',10), product=text(b.product,'product',200), shift=b.shift||'day', target=positive(b.target,'target quantity',true), produced=positive(b.produced,'produced quantity',true), accepted=positive(b.accepted,'accepted quantity',true), rejected=positive(b.rejected??0,'rejected quantity',true);if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new Error('Invalid production date.');if(!['day','evening','night'].includes(shift))throw new Error('Invalid shift.');if(accepted+rejected>produced)throw new Error('Invalid quality quantities.');const time=v=>v?(/^([01]\d|2[0-3]):[0-5]\d$/.test(v)?v+':00':(()=>{throw new Error('Invalid time.')})()):null;if(b.machineId||b.machine_id){const [ms]=await pool.execute('SELECT state FROM machines WHERE id=? LIMIT 1',[b.machineId||b.machine_id]);if(ms.length && String(ms[0].state).toLowerCase()==='broken')throw new Error('Selected machine is currently broken or out of service.');}c=await pool.getConnection();await c.beginTransaction();const [r]=await c.execute('INSERT INTO production_records (production_date,shift,product,workshop_id,machine_id,target_quantity,produced_quantity,accepted_quantity,rejected_quantity,start_time,end_time,notes,created_by_user_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',[date,shift,product,b.workshopId||null,b.machineId||null,target,produced,accepted,rejected,time(b.startTime),time(b.endTime),text(b.notes,'notes',5000,true),actorId(req)]);await audit(c,req,'CREATE','production_record',r.insertId,{date,product,produced});await c.commit();return res.status(201).json({success:true,data:{id:r.insertId}});}catch(e){if(c)await c.rollback().catch(()=>{});return fail(res,e,'Could not create production record.');}finally{if(c)c.release();}});
 
 router.delete('/production-records/:id', async(req,res)=>{
  if(!['admin','production_chief'].includes(req.user?.role))return res.status(403).json({success:false,message:'Permission denied.'});
@@ -188,39 +188,38 @@ router.get('/audit-events', async(req,res)=>{if(req.user?.role!=='admin')return 
 // Phase 1 control-center summary for maintenance and operations.
 router.get('/control-center', async (req, res) => {
   try {
-    const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
-    const [workOrders] = await pool.execute(`SELECT status, priority, due_date FROM maintenance_tasks`);
-    const openWorkOrders = workOrders.filter(row => !['COMPLETED', 'CANCELLED'].includes(String(row.status))).length;
-    const waitingParts = workOrders.filter(row => String(row.status) === 'WAITING_PARTS').length;
-    const urgentWorkOrders = workOrders.filter(row => ['HIGH', 'CRITICAL'].includes(String(row.priority)) && !['COMPLETED', 'CANCELLED'].includes(String(row.status))).length;
-    const overdueWorkOrders = workOrders.filter(row => row.due_date && new Date(row.due_date) < new Date(now) && !['COMPLETED', 'CANCELLED'].includes(String(row.status))).length;
+    const [[taskStats]] = await pool.execute(
+      `SELECT COUNT(*) AS total,
+        SUM(status IN ('PENDING','IN_PROGRESS')) AS open_count,
+        SUM(status = 'WAITING_PARTS') AS waiting_parts,
+        SUM(status IN ('PENDING','IN_PROGRESS') AND priority IN ('HIGH','CRITICAL')) AS urgent_count,
+        SUM(status IN ('PENDING','IN_PROGRESS') AND due_date < NOW()) AS overdue_count
+       FROM maintenance_tasks`);
+    const [[partStats]] = await pool.execute(
+      'SELECT COUNT(*) AS low_stock_count FROM warehouse_parts WHERE stock_quantity <= minimum_quantity');
+    const [[planStats]] = await pool.execute(
+      'SELECT COUNT(*) AS overdue_count FROM cmms_preventive_plans WHERE active = 1 AND next_due_at < NOW()');
+    const [[breakdownStats]] = await pool.execute('SELECT COUNT(*) AS total FROM cmms_breakdown_reports');
+    const [[safetyStats]] = await pool.execute("SELECT COUNT(*) AS total FROM cmms_safety_inspections WHERE result = 'HAZARD'");
+    const [[technicianStats]] = await pool.execute(
+      "SELECT COUNT(*) AS total, SUM(active <> 0 AND availability_status = 'available') AS available FROM technicians");
+    const [[documentStats]] = await pool.execute('SELECT COUNT(*) AS total FROM cmms_machine_documents');
 
-    const [parts] = await pool.execute('SELECT stock_quantity, minimum_quantity FROM warehouse_parts');
-    const lowStockParts = parts.filter(row => Number(row.stock_quantity) <= Number(row.minimum_quantity)).length;
-
-    const [plans] = await pool.execute('SELECT active, next_due_at FROM cmms_preventive_plans');
-    const overduePreventivePlans = plans.filter(row => Number(row.active) === 1 && row.next_due_at && new Date(row.next_due_at) < new Date()).length;
-
-    const [breakdowns] = await pool.execute('SELECT COUNT(*) AS total FROM cmms_breakdown_reports');
-    const [safety] = await pool.execute("SELECT COUNT(*) AS total FROM cmms_safety_inspections WHERE result='HAZARD'");
-    const [technicians] = await pool.execute('SELECT availability_status, active FROM technicians');
-    const availableTechnicians = technicians.filter(row => row.active !== 0 && String(row.availability_status || '').toLowerCase() === 'available').length;
-
-    const [documents] = await pool.execute('SELECT COUNT(*) AS total FROM cmms_machine_documents');
+    const number = value => Number(value || 0);
 
     return res.json({
       success: true,
       data: {
-        openWorkOrders,
-        waitingParts,
-        urgentWorkOrders,
-        overdueWorkOrders,
-        lowStockParts,
-        overduePreventivePlans,
-        breakdownReports: Number(breakdowns[0]?.total || 0),
-        safetyHazards: Number(safety[0]?.total || 0),
-        technicians: { total: technicians.length, available: availableTechnicians },
-        machineDocuments: Number(documents[0]?.total || 0),
+        openWorkOrders: number(taskStats.open_count),
+        waitingParts: number(taskStats.waiting_parts),
+        urgentWorkOrders: number(taskStats.urgent_count),
+        overdueWorkOrders: number(taskStats.overdue_count),
+        lowStockParts: number(partStats.low_stock_count),
+        overduePreventivePlans: number(planStats.overdue_count),
+        breakdownReports: number(breakdownStats.total),
+        safetyHazards: number(safetyStats.total),
+        technicians: { total: number(technicianStats.total), available: number(technicianStats.available) },
+        machineDocuments: number(documentStats.total),
       },
     });
   } catch (error) {
@@ -231,12 +230,11 @@ router.get('/control-center', async (req, res) => {
 // Phase C: production availability summary connected to maintenance state.
 router.get('/production-availability', async (req, res) => {
   try {
-    const [machines] = await pool.execute('SELECT state, workshop_id FROM machines');
-    const [openOrders] = await pool.execute("SELECT COUNT(*) AS total FROM maintenance_tasks WHERE status NOT IN ('COMPLETED','CANCELLED')");
-    const available = machines.filter(row => String(row.state).toLowerCase() === 'working').length;
-    const maintenance = machines.filter(row => String(row.state).toLowerCase() === 'maintenance').length;
-    const broken = machines.filter(row => String(row.state).toLowerCase() === 'broken').length;
-    return res.json({ success: true, data: { totalMachines: machines.length, available, maintenance, broken, openMaintenanceOrders: Number(openOrders[0]?.total || 0) } });
+    const [[machineStats]] = await pool.execute(
+      "SELECT COUNT(*) AS total, SUM(LOWER(state) = 'working') AS available, SUM(LOWER(state) = 'maintenance') AS maintenance, SUM(LOWER(state) = 'broken') AS broken FROM machines");
+    const [[orderStats]] = await pool.execute("SELECT COUNT(*) AS total FROM maintenance_tasks WHERE status NOT IN ('COMPLETED','CANCELLED')");
+    const number = value => Number(value || 0);
+    return res.json({ success: true, data: { totalMachines: number(machineStats.total), available: number(machineStats.available), maintenance: number(machineStats.maintenance), broken: number(machineStats.broken), openMaintenanceOrders: number(orderStats.total) } });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Could not load production availability.' });
   }
@@ -245,14 +243,12 @@ router.get('/production-availability', async (req, res) => {
 // Phase D: preventive maintenance compliance summary.
 router.get('/pm-compliance', async (req, res) => {
   try {
-    const [plans] = await pool.execute('SELECT active, next_due_at FROM cmms_preventive_plans');
-    const total = plans.length;
-    const activePlans = plans.filter(row => Number(row.active) === 1).length;
-    const overdue = plans.filter(row => Number(row.active) === 1 && row.next_due_at && new Date(row.next_due_at) < new Date()).length;
-    const [tasks] = await pool.execute("SELECT status FROM maintenance_tasks WHERE maintenance_type='PREVENTIVE'");
-    const completed = tasks.filter(row => String(row.status) === 'COMPLETED').length;
-    const compliance = total ? Math.round((completed / Math.max(tasks.length, 1)) * 100) : 100;
-    return res.json({ success: true, data: { totalPlans: total, activePlans, overduePlans: overdue, preventiveTasks: tasks.length, completedPreventiveTasks: completed, compliancePercent: compliance } });
+    const [[planStats]] = await pool.execute('SELECT COUNT(*) AS total, SUM(active = 1) AS active_count, SUM(active = 1 AND next_due_at < NOW()) AS overdue_count FROM cmms_preventive_plans');
+    const [[taskStats]] = await pool.execute("SELECT COUNT(*) AS total, SUM(status = 'COMPLETED') AS completed FROM maintenance_tasks WHERE maintenance_type = 'PREVENTIVE'");
+    const totalTasks = Number(taskStats.total || 0);
+    const completed = Number(taskStats.completed || 0);
+    const compliance = totalTasks ? Math.round((completed / totalTasks) * 10000) / 100 : 100;
+    return res.json({ success: true, data: { totalPlans: Number(planStats.total || 0), activePlans: Number(planStats.active_count || 0), overduePlans: Number(planStats.overdue_count || 0), preventiveTasks: totalTasks, completedPreventiveTasks: completed, compliancePercent: compliance } });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Could not load PM compliance.' });
   }
@@ -279,17 +275,19 @@ router.get('/parts-availability', async (req, res) => {
 // Phase F: executive operational summary.
 router.get('/executive-summary', async (req, res) => {
   try {
-    const [machines] = await pool.execute('SELECT state FROM machines');
-    const [openOrders] = await pool.execute("SELECT COUNT(*) AS total FROM maintenance_tasks WHERE status NOT IN ('COMPLETED','CANCELLED')");
-    const [lowStock] = await pool.execute('SELECT COUNT(*) AS total FROM warehouse_parts WHERE stock_quantity <= minimum_quantity');
-    const [hazards] = await pool.execute("SELECT COUNT(*) AS total FROM cmms_safety_inspections WHERE result='HAZARD'");
-    const [production] = await pool.execute('SELECT COUNT(*) AS total, COALESCE(SUM(produced_quantity),0) AS produced FROM production_records');
+    const [[machineStats]] = await pool.execute(
+      "SELECT COUNT(*) AS total, SUM(LOWER(state) = 'working') AS available, SUM(LOWER(state) = 'broken') AS broken FROM machines");
+    const [[orderStats]] = await pool.execute("SELECT COUNT(*) AS total FROM maintenance_tasks WHERE status NOT IN ('COMPLETED','CANCELLED')");
+    const [[lowStock]] = await pool.execute('SELECT COUNT(*) AS total FROM warehouse_parts WHERE stock_quantity <= minimum_quantity');
+    const [[hazards]] = await pool.execute("SELECT COUNT(*) AS total FROM cmms_safety_inspections WHERE result='HAZARD'");
+    const [[production]] = await pool.execute('SELECT COUNT(*) AS total, COALESCE(SUM(produced_quantity),0) AS produced FROM production_records');
+    const number = value => Number(value || 0);
     return res.json({ success: true, data: {
-      machines: { total: machines.length, available: machines.filter(r => String(r.state).toLowerCase()==='working').length, broken: machines.filter(r => String(r.state).toLowerCase()==='broken').length },
-      maintenance: { openWorkOrders: Number(openOrders[0]?.total || 0) },
-      inventory: { lowStockParts: Number(lowStock[0]?.total || 0) },
-      safety: { hazards: Number(hazards[0]?.total || 0) },
-      production: { records: Number(production[0]?.total || 0), producedQuantity: Number(production[0]?.produced || 0) },
+      machines: { total: number(machineStats.total), available: number(machineStats.available), broken: number(machineStats.broken) },
+      maintenance: { openWorkOrders: number(orderStats.total) },
+      inventory: { lowStockParts: number(lowStock.total) },
+      safety: { hazards: number(hazards.total) },
+      production: { records: number(production.total), producedQuantity: number(production.produced) },
     } });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Could not load executive summary.' });
@@ -369,13 +367,14 @@ router.get('/machines/:id/history', async (req, res) => {
       `SELECT o.id, o.plan_id, o.due_at, o.created_at, o.task_id, p.title AS plan_title, p.frequency_days
        FROM cmms_pm_occurrences o
        LEFT JOIN cmms_preventive_plans p ON p.id = o.plan_id
-       WHERE o.machine_id = ?
+       WHERE p.machine_id = ?
        ORDER BY o.due_at DESC, o.id DESC`,
       [machineId]
     );
 
     const [breakdowns] = await pool.execute(
-      `SELECT b.id, b.title, b.description, b.status, b.reported_at, b.resolved_at, b.machine_id, m.code AS machine_code
+      `SELECT b.id, b.symptom, b.root_cause, b.corrective_action, b.outcome, b.reported_at, b.severity, b.downtime_minutes,
+              b.machine_id, m.code AS machine_code
        FROM cmms_breakdown_reports b
        LEFT JOIN machines m ON m.id = b.machine_id
        WHERE b.machine_id = ?

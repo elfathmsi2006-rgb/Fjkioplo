@@ -102,18 +102,49 @@ router.get('/', async (req, res) => {
     let rows;
     if (MANAGER_ROLES.has(req.user?.role)) {
       [rows] = await connection.execute(
-        `SELECT l.id FROM maintenance_logs l WHERE l.submission_status = 'SUBMITTED' ORDER BY l.maintenance_date DESC, l.id DESC LIMIT 500`);
+        `SELECT l.*, m.code AS machine_code, COALESCE(NULLIF(u.full_name, ''), t.name) AS technician_name
+         FROM maintenance_logs l
+         LEFT JOIN machines m ON m.id = l.machine_id
+         LEFT JOIN technicians t ON t.id = l.technician_id
+         LEFT JOIN users u ON u.id = t.user_id
+         WHERE l.submission_status = 'SUBMITTED'
+         ORDER BY l.maintenance_date DESC, l.id DESC LIMIT 500`);
     } else if (req.user?.role === 'maintenance_worker') {
       const technician = await getTechnician(connection, req.user);
       if (!technician) return res.json({ success: true, data: [] });
       [rows] = await connection.execute(
-        `SELECT l.id FROM maintenance_logs l WHERE l.technician_id = ? AND l.submission_status = 'SUBMITTED' ORDER BY l.maintenance_date DESC, l.id DESC LIMIT 500`, [technician.id]);
+        `SELECT l.*, m.code AS machine_code, COALESCE(NULLIF(u.full_name, ''), t.name) AS technician_name
+         FROM maintenance_logs l
+         LEFT JOIN machines m ON m.id = l.machine_id
+         LEFT JOIN technicians t ON t.id = l.technician_id
+         LEFT JOIN users u ON u.id = t.user_id
+         WHERE l.technician_id = ? AND l.submission_status = 'SUBMITTED'
+         ORDER BY l.maintenance_date DESC, l.id DESC LIMIT 500`, [technician.id]);
     } else return res.status(403).json({ success: false, message: 'You cannot view maintenance logs.' });
-    const logs = [];
-    for (const row of rows) {
-      const log = await loadLog(connection, row.id);
-      if (log) logs.push(normalizedLog(log));
+
+    // Load every attachment in a single query instead of one round trip per log.
+    const attachmentsByLog = new Map();
+    if (rows.length) {
+      const ids = rows.map(row => row.id);
+      const [attachments] = await connection.query(
+        `SELECT id, maintenance_log_id, attachment_type, original_filename, mime_type, size_bytes, created_at
+         FROM maintenance_log_attachments
+         WHERE maintenance_log_id IN (${ids.map(() => '?').join(',')})
+         ORDER BY id ASC`, ids);
+      for (const item of attachments) {
+        const list = attachmentsByLog.get(item.maintenance_log_id) || [];
+        list.push(item);
+        attachmentsByLog.set(item.maintenance_log_id, list);
+      }
     }
+
+    const logs = rows.map(row => {
+      const attachments = (attachmentsByLog.get(row.id) || []).map(item => ({
+        ...item,
+        url: `/api/maintenance-logs/${row.id}/attachments/${item.id}`,
+      }));
+      return normalizedLog({ ...row, attachments });
+    });
     return res.json({ success: true, data: logs });
   } catch (error) {
     if (isMissingSchema(error)) return schemaUnavailable(res);

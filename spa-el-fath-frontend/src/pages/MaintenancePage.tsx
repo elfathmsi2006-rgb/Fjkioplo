@@ -3,7 +3,7 @@ import { CalendarDays, Download, ImagePlus, Mic, Plus, Square, Trash2, Wrench, X
 import { useApp } from '../app/AppProvider'
 import { useTranslation } from '../hooks/useTranslation'
 import type { MaintenanceLog, MaintenanceStatus, MaintenanceType } from '../data/types'
-import { localizedMachineName, downloadText, formatDate } from '../utils/format'
+import { localizedMachineName, downloadText, csvRow, formatDate } from '../utils/format'
 import { PageHeader } from '../components/ui/PageHeader'
 import { MetricCard } from '../components/ui/MetricCard'
 import { Modal } from '../components/ui/Modal'
@@ -310,7 +310,7 @@ export default function MaintenancePage() {
 
   const exportLogs = () => {
     const rows = [[t('machine'), t('date'), t('downtimeStart'), t('downtimeEnd'), t('failureCause'), t('maintenance'), t('duration'), t('technicianField'), t('cost'), t('status'), t('notes'), t('attachImage')], ...visible.map(log => [machines.find(machine => machine.id === log.machineId)?.code ?? '', log.date, log.outageStart ?? '', log.outageEnd ?? '', log.failureCause ?? '', log.type, log.durationHours, log.technician, log.cost, log.status, log.notes, log.attachments?.map(item => item.name).join('; ') || log.noteImageName || ''])]
-    downloadText('spa-el-fath-maintenance.csv', '\ufeff' + rows.map(row => row.map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\r\n'), 'text/csv;charset=utf-8')
+    downloadText('spa-el-fath-maintenance.csv', '\ufeff' + rows.map(row => csvRow(row)).join('\r\n'), 'text/csv;charset=utf-8')
   }
 
   const [exporting, setExporting] = useState(false)

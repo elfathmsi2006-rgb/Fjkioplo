@@ -57,7 +57,7 @@ router.get('/schedules', async (req, res) => {
 
 router.post('/schedules', async (req, res) => {
   try {
-    const { frequency, exportTime, timezone, enabled, retentionDays, createdBy } = req.body || {};
+    const { frequency, exportTime, timezone, enabled, retentionDays } = req.body || {};
     if (!isValidFrequency(frequency)) return res.status(400).json({ success: false, message: 'Export frequency must be daily, weekly or monthly.' });
     if (!isValidExportTime(exportTime)) return res.status(400).json({ success: false, message: 'Export time must be a valid HH:MM value.' });
     if (!isValidTimezone(timezone)) return res.status(400).json({ success: false, message: 'Export timezone must be a valid IANA timezone name.' });
@@ -68,7 +68,8 @@ router.post('/schedules', async (req, res) => {
       timezone: String(timezone).trim(),
       enabled: enabled === undefined ? true : Boolean(enabled),
       retentionDays: retentionDays === undefined ? 30 : Number(retentionDays),
-      createdBy: createdBy || null,
+      // The creator is always the authenticated account, never a client-supplied id.
+      createdBy: Number(req.user.sub),
     });
     return res.status(201).json({ success: true, data: { schedule } });
   } catch (error) {
@@ -80,7 +81,7 @@ router.post('/schedules', async (req, res) => {
 router.patch('/schedules/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid schedule identifier.' });
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ success: false, message: 'Invalid schedule identifier.' });
     const patch = req.body || {};
     const schedule = await updateExportSchedule(id, patch);
     if (!schedule) return res.status(404).json({ success: false, message: 'Scheduled export not found.' });
@@ -97,7 +98,7 @@ router.patch('/schedules/:id', async (req, res) => {
 router.get('/executions', async (req, res) => {
   try {
     const status = typeof req.query.status === 'string' ? req.query.status : '';
-    const limit = req.query.limit ? Number(req.query.limit) : 50;
+    const limit = Math.min(200, Math.max(1, Number.parseInt(req.query.limit, 10) || 50));
     const executions = await listExportExecutions(status, limit);
     return res.json({ success: true, data: { executions } });
   } catch (error) {
@@ -108,7 +109,9 @@ router.get('/executions', async (req, res) => {
 
 router.get('/executions/:id', async (req, res) => {
   try {
-    const execution = await getExportExecution(Number(req.params.id));
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ success: false, message: 'Invalid execution identifier.' });
+    const execution = await getExportExecution(id);
     if (!execution) return res.status(404).json({ success: false, message: 'Scheduled export execution not found.' });
     return res.json({ success: true, data: { execution } });
   } catch (error) {
@@ -119,7 +122,9 @@ router.get('/executions/:id', async (req, res) => {
 
 router.get('/executions/:id/download', async (req, res) => {
   try {
-    const result = await downloadExportExecution(Number(req.params.id));
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ success: false, message: 'Invalid execution identifier.' });
+    const result = await downloadExportExecution(id);
     if (result.status === 'NOT_FOUND') return res.status(404).json({ success: false, message: 'Scheduled export execution not found.' });
     if (result.status === 'FILE_MISSING') return res.status(410).json({ success: false, message: 'The generated export file is no longer available.' });
     if (result.status !== 'OK') return res.status(500).json({ success: false, message: 'Could not download the scheduled export file.' });
@@ -135,7 +140,7 @@ router.get('/executions/:id/download', async (req, res) => {
 router.post('/schedules/:id/run', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'Invalid schedule identifier.' });
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ success: false, message: 'Invalid schedule identifier.' });
     const schedule = await getExportSchedule(id);
     if (!schedule) return res.status(404).json({ success: false, message: 'Scheduled export not found.' });
     const outcome = await runExportForSchedule(schedule, 'MANUAL');
