@@ -153,6 +153,10 @@ app.use('/api/interventions', interventionsRouter);
 app.use('/api/copilot', copilotRouter);
 app.use('/api/hidden-failures', hiddenFailuresRouter);
 app.use('/api/maintenance', maintenanceExportRouter);
+// Alias: the frontend calls the export module under /api/maintenance/export/*.
+// The router above exposes the same routes at the root of /api/maintenance, so mount it
+// a second time under /export to keep both path shapes working.
+app.use('/api/maintenance/export', maintenanceExportRouter);
 app.use('/api/settings', settingsRouter);
 
 const loginLimiter = rateLimit({

@@ -102,16 +102,28 @@ export default function MaintenancePage() {
   const [savingExportSchedule, setSavingExportSchedule] = useState(false)
   const [runningExportId, setRunningExportId] = useState<string | null>(null)
   const [exportHistoryError, setExportHistoryError] = useState('')
+  const [exportModuleMissing, setExportModuleMissing] = useState(false)
   const loadExportSchedules = useCallback(async () => {
     const response = await fetch(`${API_BASE_URL}/api/maintenance/export/schedules`, { credentials: 'include', headers: authHeaders() })
     const result = await response.json() as ApiResult<ApiExportSchedule[]>
-    if (!response.ok || !result.success || !Array.isArray(result.data)) throw new Error(result.message || 'Could not load scheduled exports.')
+    if (!response.ok || !result.success || !Array.isArray(result.data)) {
+      // The scheduled-export module is optional and ships with its own migration.
+      // When it is not installed the panel stays empty with a calm note instead of
+      // showing a failure that makes the whole page look broken.
+      if ((result as { moduleMissing?: boolean }).moduleMissing) { setExportModuleMissing(true); setExportSchedules([]); return }
+      throw new Error(result.message || 'Could not load scheduled exports.')
+    }
+    setExportModuleMissing(false)
     setExportSchedules(result.data)
   }, [authHeaders])
   const loadExportExecutions = useCallback(async () => {
     const response = await fetch(`${API_BASE_URL}/api/maintenance/export/executions`, { credentials: 'include', headers: authHeaders() })
     const result = await response.json() as ApiResult<ApiExportExecution[]>
-    if (!response.ok || !result.success || !Array.isArray(result.data)) throw new Error(result.message || 'Could not load the maintenance export history.')
+    if (!response.ok || !result.success || !Array.isArray(result.data)) {
+      if ((result as { moduleMissing?: boolean }).moduleMissing) { setExportModuleMissing(true); setExportExecutions([]); return }
+      throw new Error(result.message || 'Could not load the maintenance export history.')
+    }
+    setExportModuleMissing(false)
     setExportExecutions(result.data)
   }, [authHeaders])
   useEffect(() => {
@@ -457,7 +469,7 @@ export default function MaintenancePage() {
             </div>
           )) : <p className="muted">{t('exportHistory')}</p>}
         </div>
-        {exportHistoryError ? <div className="form-errors" role="status">{exportHistoryError}</div> : null}
+        {exportModuleMissing ? <p className="muted">{tx('Scheduled exports are not installed in this database. Apply the 202611140001_phase6_scheduled_export.sql migration to enable them.', 'Les exports planifiés ne sont pas installés dans cette base de données. Appliquez la migration 202611140001_phase6_scheduled_export.sql pour les activer.', 'التصدير المجدول غير مثبت في قاعدة البيانات. طبّق الترحيل 202611140001_phase6_scheduled_export.sql لتفعيله.')}</p> : exportHistoryError ? <div className="form-errors" role="status">{exportHistoryError}</div> : null}
       </section>
     )}
     <MaintenanceSuiteTools />

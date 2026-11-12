@@ -401,9 +401,18 @@ router.post('/:id/submit', async (req, res) => {
         }
       }
       await connection.execute(`UPDATE maintenance_tasks SET status = 'COMPLETED', started_at = COALESCE(started_at, ?), completed_at = COALESCE(completed_at, NOW()) WHERE id = ?`, [log.started_at || new Date(), log.task_id]);
-      // Auto-set machine back to working when a corrective task is completed
+      // Auto-set machine state when a corrective task is completed. If other open
+      // corrective work remains on the machine, do not pretend it is healthy.
       if (String(task.maintenance_type || '').toUpperCase() === 'CORRECTIVE') {
-        await connection.execute("UPDATE machines SET state = 'working' WHERE id = ?", [log.machine_id]);
+        const [openCorrective] = await connection.execute(
+          "SELECT COUNT(*) AS open_count FROM maintenance_tasks WHERE machine_id = ? AND maintenance_type = 'CORRECTIVE' AND status NOT IN ('COMPLETED','CANCELLED')",
+          [log.machine_id]
+        );
+        const remaining = Number(openCorrective[0]?.open_count || 0);
+        await connection.execute(
+          "UPDATE machines SET state = ? WHERE id = ?",
+          [remaining > 0 ? 'maintenance' : 'working', log.machine_id]
+        );
       }
     }
     await connection.execute(`UPDATE maintenance_logs SET submission_status = 'SUBMITTED', submitted_at = NOW(), completed_at = NOW(), maintenance_date = COALESCE(maintenance_date, NOW()) WHERE id = ?`, [id]);

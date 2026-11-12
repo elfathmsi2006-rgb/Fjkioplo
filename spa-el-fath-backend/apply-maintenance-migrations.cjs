@@ -3,6 +3,7 @@
 // Usage:
 //   node apply-maintenance-migrations.cjs            apply pending migrations
 //   node apply-maintenance-migrations.cjs --status   show applied/pending status
+//   node apply-maintenance-migrations.cjs --verify   read-only schema preflight check (no DDL)
 //   node apply-maintenance-migrations.cjs --retry-failed  retry a reviewed FAILED migration
 //
 // Safety rules:
@@ -41,6 +42,8 @@ const MIGRATIONS = [
   '202611120001_phase2_security.sql',
   '202611130001_phase4_hidden_failures.sql',
   '202611140001_phase6_scheduled_export.sql',
+  // Additive, idempotent forward-only recovery; does not alter prior migrations.
+  '202611150001_phase1_missing_schema_forward.sql',
 ];
 
 const checksum = source => crypto.createHash('sha256').update(source, 'utf8').digest('hex');
@@ -95,6 +98,100 @@ function verifyManifest() {
   }
 }
 
+// Read-only preflight. Checks the structures every maintenance API path depends on.
+// Never executes DDL; for use before and after deployment.
+const REQUIRED_SCHEMA = [
+  ['maintenance_tasks', ['id', 'title', 'maintenance_type', 'machine_id', 'technician_id', 'workshop_id', 'assigned_by', 'priority', 'status', 'due_date', 'started_at', 'completed_at', 'blocked_reason', 'escalated_at', 'created_at', 'updated_at']],
+  ['maintenance_logs', ['id', 'technician_id', 'maintenance_date', 'machine_id', 'machine_name', 'workshop_id', 'description', 'task_id', 'maintenance_type', 'cost', 'duration_hours', 'problem_description', 'work_performed', 'diagnosis', 'started_at', 'completed_at', 'downtime_start', 'downtime_end', 'submitted_at', 'submission_status', 'idempotency_key', 'created_by_user_id', 'updated_at']],
+  ['maintenance_log_attachments', ['id', 'maintenance_log_id', 'attachment_type', 'original_filename', 'storage_key', 'mime_type', 'size_bytes', 'sha256', 'created_at']],
+  ['cmms_preventive_plans', ['id', 'machine_id', 'title', 'frequency_days', 'next_due_at', 'active', 'created_by', 'created_at', 'updated_at']],
+  ['cmms_pm_occurrences', ['id', 'plan_id', 'due_at', 'task_id', 'occurrence_status', 'created_at']],
+  ['cmms_pm_checklist_items', ['id', 'plan_id', 'title', 'required', 'minimum_value', 'maximum_value', 'active']],
+  ['cmms_work_order_checklist_results', ['id', 'task_id', 'checklist_item_id', 'result', 'measured_value', 'notes']],
+  ['cmms_breakdown_reports', ['id', 'machine_id', 'task_id', 'reported_at', 'severity', 'symptom', 'root_cause', 'corrective_action', 'outcome', 'downtime_minutes', 'reported_by']],
+  ['cmms_work_order_parts', ['id', 'task_id', 'part_id', 'quantity', 'unit_cost', 'status', 'created_by', 'created_at']],
+  ['cmms_machine_meter_readings', ['id', 'machine_id', 'meter_type', 'reading_value', 'reading_at', 'source', 'recorded_by']],
+  ['cmms_condition_readings', ['id', 'machine_id', 'metric', 'value_num', 'unit', 'measured_at', 'source', 'threshold_min', 'threshold_max', 'recorded_by']],
+  ['cmms_maintenance_manual_links', ['id', 'machine_id', 'title', 'document_url', 'document_type', 'active', 'created_by']],
+  ['cmms_safety_inspections', ['id', 'title', 'machine_id', 'inspection_date', 'result', 'created_by']],
+  ['cmms_machine_documents', ['id', 'title', 'machine_id', 'document_type', 'file_location', 'created_by']],
+  ['cmms_hidden_failure_findings', ['id', 'fingerprint', 'machine_id', 'category', 'risk_level', 'risk_score', 'status', 'detected_at']],
+  ['cmms_maintenance_export_schedules', ['id', 'frequency', 'export_time', 'timezone', 'enabled', 'last_run_at', 'retention_days']],
+  ['cmms_maintenance_export_executions', ['id', 'schedule_id', 'status', 'filename', 'triggered_by', 'started_at']],
+  ['warehouse_parts', ['id', 'sku', 'name', 'stock_quantity', 'minimum_quantity', 'unit_cost', 'created_by_user_id']],
+  ['warehouse_movements', ['id', 'part_id', 'movement_type', 'quantity', 'reason', 'created_by_user_id']],
+  ['technicians', ['id', 'name', 'user_id', 'skill', 'shift_name', 'attendance_status', 'active']],
+  ['machines', ['id', 'code', 'name', 'workshop_id', 'state']],
+  ['workshops', ['id', 'name']],
+  ['users', ['id', 'full_name', 'email', 'password_hash', 'role_id', 'active', 'token_version']],
+  ['password_reset_tokens', ['id', 'user_id', 'token_hash', 'expires_at', 'used_at']],
+  ['revoked_sessions', ['jti', 'user_id', 'expires_at']],
+  ['audit_trail', ['id', 'table_name', 'record_id', 'action', 'actor_id', 'created_at']],
+];
+const REQUIRED_ENUMS = [
+  ['maintenance_tasks', 'status', ['PENDING', 'WAITING_PARTS', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']],
+  ['maintenance_tasks', 'priority', ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']],
+  ['maintenance_tasks', 'maintenance_type', ['CORRECTIVE', 'PREVENTIVE']],
+  ['maintenance_logs', 'maintenance_type', ['CORRECTIVE', 'PREVENTIVE']],
+  ['maintenance_logs', 'submission_status', ['DRAFT', 'SUBMITTED']],
+  ['cmms_work_order_parts', 'status', ['RESERVED', 'ISSUED', 'RETURNED', 'CANCELLED']],
+];
+
+async function verifySchema(db) {
+  const [tables] = await db.query(
+    'SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()'
+  );
+  const present = new Set(tables.map(row => row.TABLE_NAME));
+  const failures = [];
+  // Deployed-file drift: if a file changed after it was applied, refreshing it would
+  // silently hide schema state problems. Report before any migration is run.
+  try {
+    const applied = await appliedMap(db);
+    for (const file of MIGRATIONS) {
+      const record = applied.get(file);
+      if (!record) continue;
+      const sql = fs.readFileSync(path.join(__dirname, 'sql', file), 'utf8');
+      if (checksum(sql) !== record.checksum) {
+        failures.push(`checksum drift: ${file} (record says ${record.status}, applied file content differs)`);
+      }
+    }
+  } catch (error) {
+    failures.push(`could not verify migration checksums: ${error.message}`);
+  }
+  for (const [table, columns] of REQUIRED_SCHEMA) {
+    if (!present.has(table)) {
+      failures.push(`missing table: ${table}`);
+      continue;
+    }
+    const [cols] = await db.query(
+      'SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
+      [table]
+    );
+    const names = new Set(cols.map(row => row.COLUMN_NAME));
+    for (const column of columns) {
+      if (!names.has(column)) failures.push(`missing column: ${table}.${column}`);
+    }
+  }
+  for (const [table, column, expected] of REQUIRED_ENUMS) {
+    if (!present.has(table)) continue;
+    const [rows] = await db.query(
+      'SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+      [table, column]
+    );
+    const actual = rows.length ? rows[0].COLUMN_TYPE : '';
+    if (!expected.every(value => actual.includes(`'${value}'`))) {
+      failures.push(`enum ${table}.${column} missing value(s): ${expected.join(', ')} (actual: ${actual || 'column missing'})`);
+    }
+  }
+  if (failures.length) {
+    console.error('SCHEMA VERIFICATION FAILED:');
+    for (const failure of failures) console.error(`  - ${failure}`);
+    process.exitCode = 2;
+    return;
+  }
+  console.log('SCHEMA VERIFICATION PASSED: all required maintenance tables, columns and enum values are present.');
+}
+
 function printStatus(rows) {
   const width = Math.max(20, ...MIGRATIONS.map(file => file.length));
   console.log(`${'MIGRATION'.padEnd(width)}  STATUS   APPLIED AT`);
@@ -121,12 +218,18 @@ function printStatus(rows) {
   });
 
   const statusOnly = process.argv.includes('--status');
+  const verifyOnly = process.argv.includes('--verify');
   const retryFailed = process.argv.includes('--retry-failed');
 
   try {
     verifyManifest();
     await ensureTrackingTable(db);
     const applied = await appliedMap(db);
+
+    if (verifyOnly) {
+      await verifySchema(db);
+      return;
+    }
 
     if (statusOnly) {
       printStatus(applied);

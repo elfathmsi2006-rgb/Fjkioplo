@@ -13,6 +13,7 @@ All operational routes except the public health/login and OAuth callback/webhook
 | `/api/workshops` | List/read workshops; `PUT /:id` updates workshop name, translations, manager, manager phone, and location. |
 | `/api/maintenance-logs` | List/read, create drafts, upload/read/delete attachments, submit maintenance logs. |
 List/create/update/delete work orders and escalate with role and assignment rules.
+| `/api/maintenance` | Maintenance Excel export (immediate download), export schedules (list/create/update/run), and export execution history (list/read/download). The same routes are also served under the `/api/maintenance/export` alias used by the frontend. |
 | `/api/technicians` | Technician records. |
 | `/api/maintenance-suite` | Summary, analytics, breakdowns, preventive checklists, checklist results, meter/condition readings, spare-part reservation/issue/return, manual links, and due-plan execution. |
 | `/api/operations` | Spare-parts catalogue, stock movements, production records, preventive plans, audit events. |

@@ -114,6 +114,10 @@ function buildWorkbook(dataSets) {
   const counts = [];
   for (const dataSet of dataSets) {
     if (!dataSet || !dataSet.name) continue;
+    // The Summary sheet is appended once, below. A data set named "Summary" carries
+    // that summary content, so it must never be appended as a second worksheet:
+    // the workbook writer rejects duplicate sheet names ("Summary already exists").
+    if (dataSet.name.trim().toLowerCase() === 'summary') continue;
     XLSX.utils.book_append_sheet(workbook, buildSheet(dataSet.name, dataSet.columns || SUMMARY_COLUMNS, dataSet.rows), dataSet.name.slice(0, 31));
     counts.push({ worksheet: dataSet.name, records: (dataSet.rows || []).length, included: true });
   }

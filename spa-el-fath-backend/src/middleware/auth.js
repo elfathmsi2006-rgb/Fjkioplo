@@ -16,6 +16,29 @@ let tokenVersionSupported = true;
 // token_version check still invalidates sessions after password changes.
 let revocationSupported = true;
 
+// The browser sends an Origin header on every state-changing request. The configured
+// FRONTEND_URL is the trusted origin, but the very same application opened through
+// 127.0.0.1 or [::1] instead of localhost is the same trust domain, so those
+// equivalents are accepted as well. Without this a browser that opens the app on
+// 127.0.0.1 can read everything but silently fails to save anything, which looks
+// like a broken feature rather than a rejected origin.
+function allowedOrigins() {
+  const configured = String(process.env.FRONTEND_URL || 'http://localhost:5173')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+  const origins = new Set(configured);
+  for (const origin of configured) {
+    let url;
+    try { url = new URL(origin); } catch { continue; }
+    const equivalents = ['localhost', '127.0.0.1', '[::1]'];
+    for (const host of equivalents) {
+      origins.add(`${url.protocol}//${host}${url.port ? `:${url.port}` : ''}`);
+    }
+  }
+  return origins;
+}
+
 async function isRevoked(jti) {
   if (!jti || !revocationSupported) return false;
   try {
@@ -63,9 +86,8 @@ async function requireAuth(req, res, next) {
   const token = cookies.elfath_session || (scheme === 'Bearer' ? bearerToken : null);
 
   if (cookies.elfath_session && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
-    const expectedOrigin = process.env.FRONTEND_URL || 'http://localhost:5173';
     const requestOrigin = req.headers.origin;
-    if (requestOrigin && requestOrigin !== expectedOrigin) {
+    if (requestOrigin && !allowedOrigins().has(requestOrigin)) {
       return res.status(403).json({ success: false, message: 'Request origin is not allowed.' });
     }
   }

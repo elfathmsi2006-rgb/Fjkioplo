@@ -10,29 +10,63 @@ type ModuleKey = 'orders' | 'preventive' | 'parts' | 'technicians' | 'safety' | 
 type RecordRow = Record<string, unknown> & { id: number | string; has_log?: number | boolean }
 type Field = { key: string; label: string; type?: 'text' | 'number' | 'date' | 'textarea' | 'url' | 'select'; required?: boolean; options?: { value: string; label: string }[] }
 const API = ((import.meta.env.VITE_API_URL as string | undefined) || 'http://localhost:3000').replace(/\/+$/, '')
-const modules: { key: ModuleKey; label: string; icon: typeof Wrench; fields: Field[] }[] = [
-  { key: 'orders', label: 'أوامر العمل', icon: Wrench, fields: [
-    { key: 'title', label: 'عنوان العطل / العمل', required: true }, { key: 'description', label: 'الوصف / التشخيص', type: 'textarea' },
-    { key: 'machineId', label: 'الآلة', type: 'select' }, { key: 'workshopId', label: 'الورشة', type: 'select' }, { key: 'technicianId', label: 'الفني المسؤول', type: 'select' },
-    { key: 'maintenanceType', label: 'نوع الصيانة', type: 'select', options: [{ value: 'CORRECTIVE', label: 'تصحيحية' }, { value: 'PREVENTIVE', label: 'وقائية' }] },
-    { key: 'priority', label: 'الأولوية', type: 'select', options: [{ value: 'LOW', label: 'عادي' }, { value: 'MEDIUM', label: 'مرتفع' }, { value: 'HIGH', label: 'عاجل' }, { value: 'CRITICAL', label: 'حرج' }] },
-    { key: 'status', label: 'الحالة', type: 'select', options: [{ value: 'PENDING', label: 'مفتوح' }, { value: 'IN_PROGRESS', label: 'قيد التنفيذ' }, { value: 'COMPLETED', label: 'مكتمل' }, { value: 'CANCELLED', label: 'ملغى' }] },
-    { key: 'dueDate', label: 'موعد الإنجاز', type: 'date' },
+type Tx = (en: string, fr: string, ar: string) => string
+type ModuleDef = { key: ModuleKey; label: string; icon: typeof Wrench; fields: Field[] }
+const MODULE_KEYS: ModuleKey[] = ['orders', 'preventive', 'parts', 'technicians', 'safety', 'documents']
+// Tab labels, table headers and form labels are all built through tx() so the hub
+// follows the language chosen in Settings instead of staying on Arabic.
+const buildModules = (tx: Tx): ModuleDef[] => [
+  { key: 'orders', label: tx('Work orders', 'Ordres de travail', 'أوامر العمل'), icon: Wrench, fields: [
+    { key: 'title', label: tx('Fault / work title', 'Titre de la panne / du travail', 'عنوان العطل / العمل'), required: true },
+    { key: 'description', label: tx('Description / diagnosis', 'Description / diagnostic', 'الوصف / التشخيص'), type: 'textarea' },
+    { key: 'machineId', label: tx('Machine', 'Machine', 'الآلة'), type: 'select' },
+    { key: 'workshopId', label: tx('Workshop', 'Atelier', 'الورشة'), type: 'select' },
+    { key: 'technicianId', label: tx('Assigned technician', 'Technicien responsable', 'الفني المسؤول'), type: 'select' },
+    { key: 'maintenanceType', label: tx('Maintenance type', 'Type de maintenance', 'نوع الصيانة'), type: 'select', options: [{ value: 'CORRECTIVE', label: tx('Corrective', 'Corrective', 'تصحيحية') }, { value: 'PREVENTIVE', label: tx('Preventive', 'Préventive', 'وقائية') }] },
+    { key: 'priority', label: tx('Priority', 'Priorité', 'الأولوية'), type: 'select', options: [{ value: 'LOW', label: tx('Low', 'Basse', 'عادي') }, { value: 'MEDIUM', label: tx('Medium', 'Moyenne', 'مرتفع') }, { value: 'HIGH', label: tx('High', 'Haute', 'عاجل') }, { value: 'CRITICAL', label: tx('Critical', 'Critique', 'حرج') }] },
+    { key: 'status', label: tx('Status', 'Statut', 'الحالة'), type: 'select', options: [{ value: 'PENDING', label: tx('Open', 'Ouvert', 'مفتوح') }, { value: 'IN_PROGRESS', label: tx('In progress', 'En cours', 'قيد التنفيذ') }, { value: 'COMPLETED', label: tx('Completed', 'Terminé', 'مكتمل') }, { value: 'CANCELLED', label: tx('Cancelled', 'Annulé', 'ملغى') }] },
+    { key: 'dueDate', label: tx('Due date', 'Échéance', 'موعد الإنجاز'), type: 'date' },
   ] },
-  { key: 'preventive', label: 'الصيانة الوقائية', icon: RefreshCw, fields: [
-    { key: 'title', label: 'اسم الخطة', required: true }, { key: 'machineId', label: 'الآلة', type: 'select', required: true }, { key: 'frequencyDays', label: 'التكرار بالأيام', type: 'number', required: true }, { key: 'nextDueAt', label: 'الموعد القادم', type: 'date', required: true }, { key: 'description', label: 'قائمة الفحص / الوصف', type: 'textarea' }, { key: 'active', label: 'الحالة', type: 'select', options: [{ value: '1', label: 'نشطة' }, { value: '0', label: 'موقوفة' }] },
+  { key: 'preventive', label: tx('Preventive maintenance', 'Maintenance préventive', 'الصيانة الوقائية'), icon: RefreshCw, fields: [
+    { key: 'title', label: tx('Plan title', 'Titre du plan', 'اسم الخطة'), required: true },
+    { key: 'machineId', label: tx('Machine', 'Machine', 'الآلة'), type: 'select', required: true },
+    { key: 'frequencyDays', label: tx('Frequency (days)', 'Fréquence (jours)', 'التكرار بالأيام'), type: 'number', required: true },
+    { key: 'nextDueAt', label: tx('Next due date', 'Prochaine échéance', 'الموعد القادم'), type: 'date', required: true },
+    { key: 'description', label: tx('Checklist / description', 'Liste de contrôle / description', 'قائمة الفحص / الوصف'), type: 'textarea' },
+    { key: 'active', label: tx('Status', 'Statut', 'الحالة'), type: 'select', options: [{ value: '1', label: tx('Active', 'Active', 'نشطة') }, { value: '0', label: tx('Inactive', 'Inactive', 'موقوفة') }] },
   ] },
-  { key: 'parts', label: 'قطع الغيار', icon: Archive, fields: [
-    { key: 'name', label: 'اسم القطعة', required: true }, { key: 'sku', label: 'مرجع / SKU' }, { key: 'category', label: 'الفئة' }, { key: 'location', label: 'مكان التخزين' }, { key: 'stock', label: 'الكمية الافتتاحية', type: 'number' }, { key: 'minimumStock', label: 'حد إعادة الطلب', type: 'number' }, { key: 'unitCost', label: 'سعر الوحدة (دج)', type: 'number' },
+  { key: 'parts', label: tx('Spare parts', 'Pièces de rechange', 'قطع الغيار'), icon: Archive, fields: [
+    { key: 'name', label: tx('Part name', 'Nom de la pièce', 'اسم القطعة'), required: true },
+    { key: 'sku', label: tx('Reference / SKU', 'Référence / SKU', 'مرجع / SKU') },
+    { key: 'category', label: tx('Category', 'Catégorie', 'الفئة') },
+    { key: 'location', label: tx('Storage location', 'Emplacement de stockage', 'مكان التخزين') },
+    { key: 'stock', label: tx('Opening quantity', 'Quantité initiale', 'الكمية الافتتاحية'), type: 'number' },
+    { key: 'minimumStock', label: tx('Reorder threshold', 'Seuil de réapprovisionnement', 'حد إعادة الطلب'), type: 'number' },
+    { key: 'unitCost', label: tx('Unit cost (DZD)', 'Coût unitaire (DZD)', 'سعر الوحدة (دج)'), type: 'number' },
   ] },
-  { key: 'technicians', label: 'الفنيون', icon: Users, fields: [
-    { key: 'name', label: 'الاسم' }, { key: 'skill', label: 'التخصص' }, { key: 'shift', label: 'الوردية' }, { key: 'phone', label: 'الهاتف المهني' }, { key: 'attendance', label: 'الحضور', type: 'select', options: [{ value: 'present', label: 'حاضر' }, { value: 'absent', label: 'غائب' }] }, { key: 'active', label: 'الحالة', type: 'select', options: [{ value: '1', label: 'نشط' }, { value: '0', label: 'غير نشط' }] },
+  { key: 'technicians', label: tx('Technicians', 'Techniciens', 'الفنيون'), icon: Users, fields: [
+    { key: 'name', label: tx('Name', 'Nom', 'الاسم') },
+    { key: 'skill', label: tx('Speciality', 'Spécialité', 'التخصص') },
+    { key: 'shift', label: tx('Shift', 'Équipe', 'الوردية') },
+    { key: 'phone', label: tx('Phone', 'Téléphone', 'الهاتف المهني') },
+    { key: 'attendance', label: tx('Attendance', 'Présence', 'الحضور'), type: 'select', options: [{ value: 'present', label: tx('Present', 'Présent', 'حاضر') }, { value: 'absent', label: tx('Absent', 'Absent', 'غائب') }] },
+    { key: 'active', label: tx('Status', 'Statut', 'الحالة'), type: 'select', options: [{ value: '1', label: tx('Active', 'Actif', 'نشط') }, { value: '0', label: tx('Inactive', 'Inactif', 'غير نشط') }] },
   ] },
-  { key: 'safety', label: 'السلامة والفحوصات', icon: ShieldCheck, fields: [
-    { key: 'title', label: 'الفحص / الإجراء', required: true }, { key: 'machineId', label: 'الآلة', type: 'select' }, { key: 'inspectionDate', label: 'تاريخ الفحص', type: 'date', required: true }, { key: 'inspector', label: 'المفتش' }, { key: 'result', label: 'النتيجة', type: 'select', options: [{ value: 'COMPLIANT', label: 'مطابق' }, { value: 'OBSERVATION', label: 'ملاحظة' }, { value: 'HAZARD', label: 'خطر — يلزم الإيقاف' }] }, { key: 'notes', label: 'ملاحظات وإجراءات', type: 'textarea' },
+  { key: 'safety', label: tx('Safety & inspections', 'Sécurité et inspections', 'السلامة والفحوصات'), icon: ShieldCheck, fields: [
+    { key: 'title', label: tx('Inspection / procedure', 'Inspection / procédure', 'الفحص / الإجراء'), required: true },
+    { key: 'machineId', label: tx('Machine', 'Machine', 'الآلة'), type: 'select' },
+    { key: 'inspectionDate', label: tx('Inspection date', 'Date d’inspection', 'تاريخ الفحص'), type: 'date', required: true },
+    { key: 'inspector', label: tx('Inspector', 'Inspecteur', 'المفتش') },
+    { key: 'result', label: tx('Result', 'Résultat', 'النتيجة'), type: 'select', options: [{ value: 'COMPLIANT', label: tx('Compliant', 'Conforme', 'مطابق') }, { value: 'OBSERVATION', label: tx('Observation', 'Observation', 'ملاحظة') }, { value: 'HAZARD', label: tx('Hazard — stop required', 'Danger — arrêt requis', 'خطر — يلزم الإيقاف') }] },
+    { key: 'notes', label: tx('Notes and actions', 'Notes et actions', 'ملاحظات وإجراءات'), type: 'textarea' },
   ] },
-  { key: 'documents', label: 'وثائق الآلات', icon: FileText, fields: [
-    { key: 'title', label: 'اسم الوثيقة', required: true }, { key: 'machineId', label: 'الآلة', type: 'select' }, { key: 'documentType', label: 'نوع الوثيقة', type: 'select', options: [{ value: 'OPERATING_MANUAL', label: 'دليل تشغيل' }, { value: 'ELECTRICAL_DIAGRAM', label: 'مخطط كهربائي' }, { value: 'MAINTENANCE_MANUAL', label: 'دليل صيانة' }, { value: 'CERTIFICATE', label: 'شهادة' }, { value: 'OTHER', label: 'أخرى' }] }, { key: 'referenceCode', label: 'رقم / مرجع الوثيقة' }, { key: 'fileLocation', label: 'رابط الملف أو مساره' }, { key: 'notes', label: 'ملاحظات', type: 'textarea' },
+  { key: 'documents', label: tx('Machine documents', 'Documents des machines', 'وثائق الآلات'), icon: FileText, fields: [
+    { key: 'title', label: tx('Document title', 'Titre du document', 'اسم الوثيقة'), required: true },
+    { key: 'machineId', label: tx('Machine', 'Machine', 'الآلة'), type: 'select' },
+    { key: 'documentType', label: tx('Document type', 'Type de document', 'نوع الوثيقة'), type: 'select', options: [{ value: 'OPERATING_MANUAL', label: tx('Operating manual', 'Manuel d’utilisation', 'دليل تشغيل') }, { value: 'ELECTRICAL_DIAGRAM', label: tx('Electrical diagram', 'Schéma électrique', 'مخطط كهربائي') }, { value: 'MAINTENANCE_MANUAL', label: tx('Maintenance manual', 'Manuel de maintenance', 'دليل صيانة') }, { value: 'CERTIFICATE', label: tx('Certificate', 'Certificat', 'شهادة') }, { value: 'OTHER', label: tx('Other', 'Autre', 'أخرى') }] },
+    { key: 'referenceCode', label: tx('Document reference', 'Référence du document', 'رقم / مرجع الوثيقة') },
+    { key: 'fileLocation', label: tx('File URL or path', 'URL ou chemin du fichier', 'رابط الملف أو مساره') },
+    { key: 'notes', label: tx('Notes', 'Notes', 'ملاحظات'), type: 'textarea' },
   ] },
 ]
 const endpoint: Record<ModuleKey, string> = { orders: '/api/tasks', preventive: '/api/operations/preventive-plans', parts: '/api/operations/spare-parts', technicians: '/api/technicians', safety: '/api/operations/safety-inspections', documents: '/api/operations/machine-documents' }
@@ -54,6 +88,13 @@ export default function OperationsHubPage() {
   const [tabErrors, setTabErrors] = useState<Partial<Record<ModuleKey, string>>>({})
   const [executive, setExecutive] = useState<Record<string, unknown> | null>(null)
   const tx = (en: string, fr: string, ar: string) => language === 'ar' ? ar : language === 'fr' ? fr : en
+  const modules = useMemo(() => buildModules(tx), [language])
+  const kanbanLabels = useMemo<Record<string, string>>(() => ({
+    PENDING: tx('Open', 'Ouvert', 'مفتوح'),
+    WAITING_PARTS: tx('Waiting for parts', 'En attente de pièces', 'بانتظار قطع'),
+    IN_PROGRESS: tx('In progress', 'En cours', 'قيد التنفيذ'),
+    COMPLETED: tx('Completed', 'Terminé', 'مكتمل'),
+  }), [language])
   const canEditOrders = profile?.role === 'admin' || profile?.role === 'production_chief'
   const canManage = profile?.role === 'admin' || profile?.role === 'production_chief' || profile?.role === 'workshop_head'
   const current = modules.find(item => item.key === active) ?? modules[0]
@@ -69,7 +110,7 @@ export default function OperationsHubPage() {
     setLoading(true); setError(''); setTabErrors({})
     try {
       await syncPendingTaskUpdates(API)
-      const keys = modules.map(m => m.key)
+      const keys = MODULE_KEYS
       // Each tab fetch settles independently: one failing endpoint must never blank the other tabs.
       const results = await Promise.all(keys.map(async key => {
         try {
@@ -104,7 +145,7 @@ export default function OperationsHubPage() {
     }
     finally { setLoading(false) }
   }, [request])
-  useEffect(() => { const tab = searchParams.get('tab'); if (tab && modules.some(m => m.key === tab)) setActive(tab as ModuleKey) }, [searchParams])
+  useEffect(() => { const tab = searchParams.get('tab'); if (tab && MODULE_KEYS.includes(tab as ModuleKey)) setActive(tab as ModuleKey) }, [searchParams])
   useEffect(() => { void refresh() }, [refresh])
   useEffect(() => { void fetch(`${API}/api/operations/executive-summary`, { credentials: 'include' }).then(r => r.json()).then(b => { if (b?.success) setExecutive(b.data) }).catch(() => undefined) }, [])
   useEffect(() => { setForm({}); setEditing(null); setShowForm(false) }, [active])
@@ -147,7 +188,7 @@ export default function OperationsHubPage() {
   }
   const remove = async (row: RecordRow) => {
     if (!window.confirm(tx('Delete this record from the database?', 'Supprimer cet enregistrement de la base de données ?', 'هل تريد حذف هذا السجل من قاعدة البيانات؟'))) return
-    try { await request(`${endpoint[active]}/${row.id}`, { method: 'DELETE' }); showToast(tx('Record deleted.', 'Enregistrement supprimé.', 'تم حذف السجل.')); await refresh() }
+    try { const body = await request(`${endpoint[active]}/${row.id}`, { method: 'DELETE' }); showToast(String(body?.message || tx('Record deleted.', 'Enregistrement supprimé.', 'تم حذف السجل.'))); await refresh() }
     catch (e) { showToast(e instanceof Error ? e.message : 'Delete failed.') }
   }
   const escalate = async (row: RecordRow) => {
@@ -162,9 +203,12 @@ export default function OperationsHubPage() {
   const valueFor = (row: RecordRow, field: Field) => {
     const key = field.key === 'machineId' ? 'machine_code' : field.key === 'technicianId' ? 'technician_name' : field.key === 'workshopId' ? 'workshop_name' : field.key === 'nextDueAt' ? 'next_due_at' : field.key === 'inspectionDate' ? 'inspection_date' : field.key === 'fileLocation' ? 'file_location' : field.key === 'documentType' ? 'document_type' : field.key === 'referenceCode' ? 'reference_code' : field.key === 'minimumStock' ? 'minimum_stock' : field.key === 'unitCost' ? 'unit_cost' : field.key === 'dueDate' ? 'due_date' : field.key === 'attendance' ? 'attendance' : field.key === 'shift' ? 'shift' : field.key
     const value = row[key] ?? row[field.key]
-    if (field.key === 'priority') return ({ LOW: 'عادي', MEDIUM: 'مرتفع', HIGH: 'عاجل', CRITICAL: 'حرج' } as Record<string, string>)[String(value)] ?? value
-    if (field.key === 'status') return ({ PENDING: 'مفتوح', IN_PROGRESS: 'قيد التنفيذ', COMPLETED: 'مكتمل', CANCELLED: 'ملغى' } as Record<string, string>)[String(value)] ?? value
-    if (field.key === 'result') return ({ COMPLIANT: 'مطابق', OBSERVATION: 'ملاحظة', HAZARD: 'خطر' } as Record<string, string>)[String(value)] ?? value
+    // Enum columns (priority, status, result, ...) use the label of the currently
+    // selected language, taken from the translated field definitions.
+    if (field.type === 'select' && field.options) {
+      const match = field.options.find(option => option.value === String(value ?? ''))
+      if (match) return match.label
+    }
     return value
   }
 
@@ -190,11 +234,11 @@ export default function OperationsHubPage() {
       {error && <p role="alert" className="operations-inline-message">{error}</p>}
       {tabErrors[active] && <p role="alert" className="operations-inline-message">{tabErrors[active]}</p>}
       {showForm && <form className="form-grid operations-form" onSubmit={event => void save(event)}>{active === 'technicians' && editing && <p className="form-full">{String(editing.name)} · {String(editing.email ?? '')}</p>}{formFields.filter(field => !(active === 'parts' && editing && field.key === 'stock')).map(field => <label className={`field-label ${field.type === 'textarea' ? 'form-full' : ''}`} key={field.key}>{field.label}{field.type === 'select' ? <select required={field.required} value={form[field.key] ?? ''} onChange={event => setForm(old => ({ ...old, [field.key]: event.target.value }))}><option value="">—</option>{fieldOptions(field).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select> : field.type === 'textarea' ? <textarea rows={3} required={field.required} value={form[field.key] ?? ''} onChange={event => setForm(old => ({ ...old, [field.key]: event.target.value }))}/> : <input type={field.type ?? 'text'} required={field.required} min={field.type === 'number' ? 0 : undefined} value={form[field.key] ?? ''} onChange={event => setForm(old => ({ ...old, [field.key]: event.target.value }))}/>}</label>)}<div className="form-actions form-full"><button type="button" className="button button-secondary" onClick={() => { setShowForm(false); setEditing(null) }}><X size={15}/>{tx('Cancel','Annuler','إلغاء')}</button><button type="submit" className="button button-primary" disabled={saving}>{saving ? tx('Saving…','Enregistrement…','جارٍ الحفظ…') : tx('Save to database','Enregistrer','حفظ في قاعدة البيانات')}</button></div></form>}
-      {!loading && rows.length === 0 ? <div className="operations-empty"><FileText size={26}/><strong>{tx('No database records','Aucun enregistrement','لا توجد سجلات في قاعدة البيانات')}</strong><span>{tx('Add a record or check that the required database migration has been applied.','Ajoutez un enregistrement ou vérifiez les migrations.','أضف سجلاً أو تحقق من تطبيق تحديثات قاعدة البيانات المطلوبة.')}</span></div> : active === 'orders' && viewMode === 'kanban' ? <div className="kanban-board">{['PENDING','WAITING_PARTS','IN_PROGRESS','COMPLETED'].map(status => <div className="kanban-column" key={status}><h3>{({PENDING:'مفتوح',WAITING_PARTS:'بانتظار قطع',IN_PROGRESS:'قيد التنفيذ',COMPLETED:'مكتمل'} as Record<string,string>)[status]}</h3>{rows.filter(row => String(row.status) === status).map(row => <div className="kanban-card" key={row.id}><strong>{String(row.title)}</strong><span>{String(row.priority)}</span><small>{row.due_date ? String(row.due_date).slice(0,10) : '—'}</small>{row.has_log && <span className="kanban-log-badge" title={tx('Has maintenance log','A un rapport de maintenance','له تقرير صيانة')}>📋</span>}</div>)}</div>)}</div> : <div className="operations-table-wrap"><table className="operations-table"><thead><tr>{current.fields.map(field => <th key={field.key}>{field.label}</th>)}{active === 'orders' && <th>{tx('Log','تقرير','تقرير')}</th>}<th>{tx('Actions','Actions','الإجراءات')}</th></tr></thead><tbody>{rows.map(row => <tr key={row.id}>{current.fields.map(field => <td key={field.key}>{field.key === 'fileLocation' && /^https:\/\//i.test(String(valueFor(row, field) ?? '')) ? <a href={String(valueFor(row, field))} target="_blank" rel="noreferrer">{tx('Open file','Ouvrir','فتح الملف')}</a> : String(valueFor(row, field) ?? '—') || '—'}</td>)}{active === 'orders' && <td>{row.has_log ? <span className="log-badge" title={tx('Has submitted maintenance log','A un rapport de maintenance soumis','له تقرير صيانة مقدم')}>📋</span> : '—'}</td>}<td><div className="table-tools">{active === 'orders' && canEditOrders && row.due_date != null && new Date(String(row.due_date)) < new Date() && !['COMPLETED','CANCELLED'].includes(String(row.status)) && <button className="icon-button" title={tx('Escalate','Escalader','تصعيد')} onClick={() => void escalate(row)}><AlertTriangle size={15}/></button>}{(active === 'orders' || active === 'technicians' ? canEditOrders : canManage) && <button className="icon-button" title={tx('Edit','Modifier','تعديل')} onClick={() => openEdit(row)}><Pencil size={15}/></button>}{(active !== 'technicians' && (active === 'orders' ? canEditOrders : canManage)) && <button className="icon-button operations-delete" title={tx('Delete','Supprimer','حذف')} onClick={() => void remove(row)}><Trash2 size={15}/></button>}</div></td></tr>)}</tbody></table></div>}
+      {!loading && rows.length === 0 ? <div className="operations-empty"><FileText size={26}/><strong>{tx('No database records','Aucun enregistrement','لا توجد سجلات في قاعدة البيانات')}</strong><span>{tx('Add a record or check that the required database migration has been applied.','Ajoutez un enregistrement ou vérifiez les migrations.','أضف سجلاً أو تحقق من تطبيق تحديثات قاعدة البيانات المطلوبة.')}</span></div> : active === 'orders' && viewMode === 'kanban' ? <div className="kanban-board">{['PENDING','WAITING_PARTS','IN_PROGRESS','COMPLETED'].map(status => <div className="kanban-column" key={status}><h3>{kanbanLabels[status]}</h3>{rows.filter(row => String(row.status) === status).map(row => <div className="kanban-card" key={row.id}><strong>{String(row.title)}</strong><span>{String(row.priority)}</span><small>{row.due_date ? String(row.due_date).slice(0,10) : '—'}</small>{row.has_log && <span className="kanban-log-badge" title={tx('Has maintenance log','A un rapport de maintenance','له تقرير صيانة')}>📋</span>}</div>)}</div>)}</div> : <div className="operations-table-wrap"><table className="operations-table"><thead><tr>{current.fields.map(field => <th key={field.key}>{field.label}</th>)}{active === 'orders' && <th>{tx('Log','تقرير','تقرير')}</th>}<th>{tx('Actions','Actions','الإجراءات')}</th></tr></thead><tbody>{rows.map(row => <tr key={row.id}>{current.fields.map(field => <td key={field.key}>{field.key === 'fileLocation' && /^https:\/\//i.test(String(valueFor(row, field) ?? '')) ? <a href={String(valueFor(row, field))} target="_blank" rel="noreferrer">{tx('Open file','Ouvrir','فتح الملف')}</a> : String(valueFor(row, field) ?? '—') || '—'}</td>)}{active === 'orders' && <td>{row.has_log ? <span className="log-badge" title={tx('Has submitted maintenance log','A un rapport de maintenance soumis','له تقرير صيانة مقدم')}>📋</span> : '—'}</td>}<td><div className="table-tools">{active === 'orders' && canEditOrders && row.due_date != null && new Date(String(row.due_date)) < new Date() && !['COMPLETED','CANCELLED'].includes(String(row.status)) && <button className="icon-button" title={tx('Escalate','Escalader','تصعيد')} onClick={() => void escalate(row)}><AlertTriangle size={15}/></button>}{(active === 'orders' || active === 'technicians' ? canEditOrders : canManage) && <button className="icon-button" title={tx('Edit','Modifier','تعديل')} onClick={() => openEdit(row)}><Pencil size={15}/></button>}{(active !== 'technicians' && (active === 'orders' ? canEditOrders : canManage)) && <button className="icon-button operations-delete" title={tx('Delete','Supprimer','حذف')} onClick={() => void remove(row)}><Trash2 size={15}/></button>}</div></td></tr>)}</tbody></table></div>}
     </div>
     <section className="technician-tracker panel"><div className="panel-heading"><div><h2>{tx('Technician availability','Disponibilité des techniciens','توفر الفنيين')}</h2><p>{tx('Status and assignments from database records','Statuts et affectations depuis la base','الحالة والتكليفات من قاعدة البيانات')}</p></div><span className="panel-icon"><Activity size={18}/></span></div><div className="technician-status-summary"><div className="technician-summary available"><span>{tx('Available','Disponible','متاح')}</span><strong>{data.technicians.filter(t => t.attendance !== 'absent' && Number(t.active) !== 0 && t.availabilityStatus !== 'busy').length}</strong></div><div className="technician-summary absent"><span>{tx('Absent','Absent','غائب')}</span><strong>{data.technicians.filter(t => t.attendance === 'absent' || Number(t.active) === 0).length}</strong></div><div className="technician-summary busy"><span>{tx('Busy','Occupé','مشغول')}</span><strong>{data.technicians.filter(t => t.availabilityStatus === 'busy').length}</strong></div></div></section>
     <section className="panel"><div className="panel-heading"><div><h2>{tx('Technician workload','Charge des techniciens','عبء العمل للفنيين')}</h2><p>{tx('Open work orders assigned to each technician','Ordres ouverts par technicien','أوامر العمل المفتوحة لكل فني')}</p></div></div><div className="operations-table-wrap"><table className="operations-table"><thead><tr><th>{tx('Technician','Technicien','الفني')}</th><th>{tx('Open work orders','Ordres ouverts','أوامر العمل المفتوحة')}</th></tr></thead><tbody>{technicianWorkload.map(item => <tr key={String(item.id)}><td>{item.name}</td><td>{item.open}</td></tr>)}</tbody></table></div></section>
     {myOrders.length > 0 && <section className="panel"><div className="panel-heading"><div><h2>{tx('My assigned work orders','Mes ordres assignés','أوامر العمل المخصصة لي')}</h2><p>{tx('Mobile-friendly task list for the signed-in technician','Liste mobile des tâches assignées','قائمة مهام مناسبة للهاتف للفني')}</p></div></div><div className="operations-table-wrap"><table className="operations-table"><thead><tr><th>{tx('Title','Titre','العنوان')}</th><th>{tx('Priority','Priorité','الأولوية')}</th><th>{tx('Due','Échéance','الموعد')}</th><th>{tx('Status','Statut','الحالة')}</th></tr></thead><tbody>{myOrders.map(row => <tr key={String(row.id)}><td>{String(row.title)}</td><td>{String(row.priority)}</td><td>{row.due_date ? String(row.due_date).slice(0,10) : '—'}</td><td>{String(row.status)}</td></tr>)}</tbody></table></div></section>}
-    <div className="operations-notice"><ShieldCheck size={18}/><div><strong>{tx('Database persistence','Persistance de la base','الحفظ في قاعدة البيانات')}</strong><p>{tx('No Operations Hub business records are stored in browser storage. Work orders can be edited and deleted only by role ID 1 or 2. Completed work orders are protected as maintenance history. Technician accounts are managed in User Management; their operational profiles are edited here. Document records store a durable URL/server path; configure managed file storage separately for binary uploads.','Aucun enregistrement opérationnel n’est stocké localement.','لا تُحفظ سجلات العمل في تخزين المتصفح. تعديل وحذف أوامر العمل متاحان للدورين 1 و2 فقط. أوامر العمل المكتملة محمية كسجل صيانة. حسابات الفنيين تُدار من إدارة المستخدمين، وتُعدل بياناتهم التشغيلية هنا. الوثائق تحفظ رابطاً أو مساراً دائماً؛ رفع الملفات الفعلية يحتاج إعداد تخزين ملفات.')}</p></div></div>
+    <div className="operations-notice"><ShieldCheck size={18}/><div><strong>{tx('Database persistence','Persistance de la base','الحفظ في قاعدة البيانات')}</strong><p>{tx('No Operations Hub business records are stored in browser storage. Work orders can be edited and deleted only by role ID 1 or 2. Completed work orders and work orders that already carry maintenance history are protected and cannot be deleted; cancel them instead so the history stays traceable. Technician accounts are managed in User Management; their operational profiles are edited here. Document records store a durable URL/server path; configure managed file storage separately for binary uploads.','Aucun enregistrement opérationnel n’est stocké localement. Les ordres de travail terminés ou portant un historique de maintenance sont protégés et ne peuvent pas être supprimés ; annulez-les pour conserver la traçabilité.','لا تُحفظ سجلات العمل في تخزين المتصفح. تعديل وحذف أوامر العمل متاحان للدورين 1 و2 فقط. أوامر العمل المكتملة أو التي تحمل تاريخ صيانة محمية ولا يمكن حذفها؛ استخدم الإلغاء بدلاً من ذلك للحفاظ على قابلية التتبع. حسابات الفنيين تُدار من إدارة المستخدمين، وتُعدل بياناتهم التشغيلية هنا. الوثائق تحفظ رابطاً أو مساراً دائماً؛ رفع الملفات الفعلية يحتاج إعداد تخزين ملفات.')}</p></div></div>
   </section>
 }

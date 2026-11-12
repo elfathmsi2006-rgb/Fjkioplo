@@ -8,7 +8,7 @@ const canManage = req => MANAGERS.has(req.user?.role);
 const actorId = req => { const n = Number(req.user?.sub); return Number.isSafeInteger(n) && n > 0 ? n : null; };
 const positive = (v, label, allowZero = false) => { const n = Number(v); if (!Number.isFinite(n) || (allowZero ? n < 0 : n <= 0)) throw new Error(`Invalid ${label}.`); return n; };
 const text = (v, label, max, optional = false) => { if (optional && (v === undefined || v === null || v === '')) return null; if (typeof v !== 'string' || !v.trim() || v.trim().length > max) throw new Error(`Invalid ${label}.`); return v.trim(); };
-const fail = (res, e, message) => { const detail = String(e.message || ''); const bad = detail.startsWith('Invalid ') || detail.includes('does not exist') || detail.includes('must be'); console.error(message, e.message); return res.status(bad ? 400 : 500).json({success:false,message:bad ? e.message : message}); };
+const fail = (res, e, message) => { const detail = String(e.message || ''); const bad = detail.startsWith('Invalid ') || detail.includes('does not exist') || detail.includes('must be'); if (e?.code === 'ER_DUP_ENTRY') { console.error(message, e.message); return res.status(409).json({success:false,message:'A record with that unique value already exists.'}); } console.error(message, e.message); return res.status(bad ? 400 : 500).json({success:false,message:bad ? e.message : message}); };
 async function audit(conn, req, action, entity, id, details = {}) {
   const auditAction = action === 'CREATE' ? 'INSERT' : action === 'DELETE' ? 'DELETE' : 'UPDATE';
   await conn.execute('INSERT INTO audit_trail (table_name, record_id, action, actor_id, old_data, new_data) VALUES (?, ?, ?, ?, NULL, ?)', [entity, id == null ? null : String(id), auditAction, actorId(req), JSON.stringify({ event: action, role: req.user?.role || null, ip: req.ip || null, ...details })]);
@@ -174,7 +174,58 @@ router.delete('/machine-documents/:id', async(req,res)=>{
 
 router.delete('/preventive-plans/:id', async(req,res)=>{
  if(!canManage(req))return res.status(403).json({success:false,message:'Permission denied.'});const id=positive(req.params.id,'plan ID');let c;
- try{c=await pool.getConnection();await c.beginTransaction();const [r]=await c.execute('SELECT * FROM cmms_preventive_plans WHERE id=? FOR UPDATE',[id]);if(!r.length){await c.rollback();return res.status(404).json({success:false,message:'Preventive plan not found.'});}await c.execute('INSERT INTO audit_trail (table_name,record_id,action,actor_id,old_data,new_data) VALUES (?,?,?,?,?,NULL)',['cmms_preventive_plans',String(id),'DELETE',actorId(req),JSON.stringify(r[0])]);await c.execute('DELETE FROM cmms_preventive_plans WHERE id=?',[id]);await c.commit();return res.json({success:true,message:'Preventive plan deleted.'});}catch(e){if(c)await c.rollback().catch(()=>{});return fail(res,e,'Could not delete preventive plan.');}finally{if(c)c.release();}
+ try{
+  c=await pool.getConnection();await c.beginTransaction();
+  const [r]=await c.execute('SELECT * FROM cmms_preventive_plans WHERE id=? FOR UPDATE',[id]);
+  if(!r.length){await c.rollback();return res.status(404).json({success:false,message:'Preventive plan not found.'});}
+  const plan=r[0];
+  await c.execute('INSERT INTO audit_trail (table_name,record_id,action,actor_id,old_data,new_data) VALUES (?,?,?,?,?,NULL)',['cmms_preventive_plans',String(id),'DELETE',actorId(req),JSON.stringify(plan)]);
+
+  // Checklist items belong to the plan and their results belong to the items.
+  await c.execute('DELETE FROM cmms_work_order_checklist_results WHERE checklist_item_id IN (SELECT id FROM cmms_pm_checklist_items WHERE plan_id=?)',[id]);
+  await c.execute('DELETE FROM cmms_pm_checklist_items WHERE plan_id=?',[id]);
+
+  // Generated occurrences belong to the plan (cmms_pm_occurrences.plan_id is NOT NULL
+  // with ON DELETE RESTRICT). The work order an occurrence produced is removed with it
+  // while it is still untouched; if it carries real history it is kept as a standalone
+  // work order and the occurrence record is dropped with an audit trail entry.
+  const [occurrences]=await c.execute('SELECT * FROM cmms_pm_occurrences WHERE plan_id=? FOR UPDATE',[id]);
+  let removedTasks=0,keptTasks=0;
+  for(const occurrence of occurrences){
+   let removable=false;
+   if(occurrence.task_id){
+    const [taskRows]=await c.execute('SELECT * FROM maintenance_tasks WHERE id=? FOR UPDATE',[occurrence.task_id]);
+    const task=taskRows[0];
+    if(task && !['COMPLETED','CANCELLED'].includes(String(task.status).toUpperCase())){
+     const [logs]=await c.execute('SELECT id FROM maintenance_logs WHERE task_id=? LIMIT 1',[occurrence.task_id]);
+     const [breakdowns]=await c.execute('SELECT id FROM cmms_breakdown_reports WHERE task_id=? LIMIT 1',[occurrence.task_id]);
+     const [issuedParts]=await c.execute("SELECT id FROM cmms_work_order_parts WHERE task_id=? AND status <> 'RESERVED' LIMIT 1",[occurrence.task_id]);
+     removable=!logs.length && !breakdowns.length && !issuedParts.length;
+     if(removable){
+      await c.execute('DELETE FROM cmms_work_order_checklist_results WHERE task_id=?',[occurrence.task_id]);
+      await c.execute('DELETE FROM cmms_work_order_parts WHERE task_id=?',[occurrence.task_id]);
+      await c.execute('INSERT INTO audit_trail (table_name,record_id,action,actor_id,old_data,new_data) VALUES (?,?,?,?,?,NULL)',['maintenance_tasks',String(occurrence.task_id),'DELETE',actorId(req),JSON.stringify(task)]);
+      await c.execute('DELETE FROM maintenance_tasks WHERE id=?',[occurrence.task_id]);
+      removedTasks++;
+     }else{
+      // The work order carries real history: it stays as a standalone work order.
+      keptTasks++;
+     }
+    }else if(task){
+     keptTasks++;
+    }
+   }
+   await c.execute('INSERT INTO audit_trail (table_name,record_id,action,actor_id,old_data,new_data) VALUES (?,?,?,?,?,NULL)',['cmms_pm_occurrences',String(occurrence.id),'DELETE',actorId(req),JSON.stringify(occurrence)]);
+   await c.execute('DELETE FROM cmms_pm_occurrences WHERE id=?',[occurrence.id]);
+  }
+
+  await c.execute('DELETE FROM cmms_preventive_plans WHERE id=?',[id]);
+  await c.commit();
+  const notes=[];
+  if(removedTasks)notes.push(`${removedTasks} generated work order(s) were removed with the plan`);
+  if(keptTasks)notes.push(`${keptTasks} work order(s) carrying maintenance history were kept`);
+  return res.json({success:true,message:notes.length?`Preventive plan deleted. ${notes.join('; ')}.`:'Preventive plan deleted.'});
+ }catch(e){if(c)await c.rollback().catch(()=>{});return fail(res,e,'Could not delete preventive plan.');}finally{if(c)c.release();}
 });
 
 router.get('/recent-activity', async(req,res)=>{

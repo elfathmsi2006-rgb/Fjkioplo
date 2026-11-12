@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output
+spa-el-fath-frontend/dist/
+spa-el-fath-backend/exports/
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Database dumps and scratch extraction artefacts
+# These are environment-specific and must not be committed.
+spa-el-fath-backend/spa_el_fath_backup_*.sql
+_schema_sections.txt
+
+# Logs
+*.log

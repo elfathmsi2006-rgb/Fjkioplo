@@ -165,12 +165,15 @@ function getMachineInput(body, previous = null) {
   return machine;
 }
 
-async function validateWorkshop(machine) {
+// Executes inside the caller's transaction when a connection is supplied; otherwise
+// uses the shared pool. This keeps the existence check consistent with the row lock.
+async function validateWorkshop(machine, connection = null) {
   if (machine.workshop_id === null) {
     return machine;
   }
 
-  const [rows] = await pool.execute(
+  const executor = connection || pool;
+  const [rows] = await executor.execute(
     'SELECT id, name FROM workshops WHERE id = ? LIMIT 1',
     [machine.workshop_id]
   );
@@ -247,10 +250,15 @@ router.post('/', canEdit, async (req, res) => {
     const clientError = error.message.startsWith('Invalid ') ||
       error.message.includes('required') ||
       error.message.includes('does not exist');
+    const duplicate = error.code === 'ER_DUP_ENTRY';
 
-    res.status(clientError ? 400 : 500).json({
+    res.status(duplicate ? 409 : clientError ? 400 : 500).json({
       success: false,
-      message: clientError ? error.message : 'Could not create machine.',
+      message: duplicate
+        ? 'A machine with that code already exists.'
+        : clientError
+          ? error.message
+          : 'Could not create machine.',
     });
 
     if (!clientError) {
@@ -291,7 +299,7 @@ router.put('/:id', canEdit, async (req, res) => {
     const previousMachine = existingRows[0];
 
     // Unsent fields keep their stored value instead of being wiped to NULL.
-    const machine = await validateWorkshop(getMachineInput(req.body, previousMachine));
+    const machine = await validateWorkshop(getMachineInput(req.body, previousMachine), connection);
     const columns = await getMachineColumns();
     if (!requireOptionalColumns(columns, machine, res)) {
       await connection.rollback();
@@ -320,18 +328,29 @@ router.put('/:id', canEdit, async (req, res) => {
       );
 
       // Phase B integration: automatically open a corrective work order for the broken machine.
-      await connection.execute(
-        `INSERT INTO maintenance_tasks
-          (title, description, maintenance_type, machine_id, workshop_id, assigned_by, priority, status, due_date)
-         VALUES (?, ?, 'CORRECTIVE', ?, ?, ?, 'HIGH', 'PENDING', DATE_ADD(NOW(), INTERVAL 1 DAY))`,
-        [
-          `Breakdown: ${machine.name || machine.code || `Machine ${id}`}`,
-          `Automatically created from machine status change to broken.`,
-          id,
-          machine.workshop_id,
-          auditActorId(req),
-        ]
+      // Suppress duplicates: an open machine-specific corrective order already carries the work.
+      const [existingAutoTask] = await connection.execute(
+        `SELECT t.id FROM maintenance_tasks t
+         WHERE t.machine_id = ? AND t.maintenance_type = 'CORRECTIVE'
+           AND t.status NOT IN ('COMPLETED','CANCELLED')
+           AND (t.title LIKE 'Breakdown: %' OR t.description LIKE 'Automatically created from machine status change%')
+         LIMIT 1`,
+        [id]
       );
+      if (!existingAutoTask.length) {
+        await connection.execute(
+          `INSERT INTO maintenance_tasks
+            (title, description, maintenance_type, machine_id, workshop_id, assigned_by, priority, status, due_date)
+           VALUES (?, ?, 'CORRECTIVE', ?, ?, ?, 'HIGH', 'PENDING', DATE_ADD(NOW(), INTERVAL 1 DAY))`,
+          [
+            `Breakdown: ${machine.name || machine.code || `Machine ${id}`}`,
+            `Automatically created from machine status change to broken.`,
+            id,
+            machine.workshop_id,
+            auditActorId(req),
+          ]
+        );
+      }
     }
 
     await connection.commit();

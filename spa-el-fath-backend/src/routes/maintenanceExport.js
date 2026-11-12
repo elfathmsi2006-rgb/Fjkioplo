@@ -25,6 +25,23 @@ const {
 const router = express.Router();
 const EXPORT_ROLES = new Set(['admin', 'production_chief', 'workshop_head']);
 
+// The scheduled-export tables ship with an additive migration. When that migration has
+// not been applied yet the module cannot work, so answer with an explicit, actionable
+// payload instead of a generic 500. The UI then explains the situation calmly instead of
+// showing a failure banner for an optional module.
+const EXPORT_MIGRATION_FILE = '202611140001_phase6_scheduled_export.sql';
+function exportModuleMissing(error) {
+  return Boolean(error) && (error.code === 'ER_NO_SUCH_TABLE' || error.code === 'ER_BAD_FIELD_ERROR');
+}
+function moduleMissing(res, error) {
+  console.error('Scheduled export module is not installed:', error.message);
+  return res.status(503).json({
+    success: false,
+    moduleMissing: true,
+    message: `Scheduled exports are not installed in this database. Apply the ${EXPORT_MIGRATION_FILE} migration to enable them.`,
+  });
+}
+
 router.use(requireAuth);
 router.use((req, res, next) => {
   if (!EXPORT_ROLES.has(req.user?.role)) {
@@ -48,9 +65,10 @@ router.get('/', async (req, res) => {
 router.get('/schedules', async (req, res) => {
   try {
     const schedules = await listExportSchedules();
-    return res.json({ success: true, data: { schedules } });
+    return res.json({ success: true, data: schedules });
   } catch (error) {
     console.error('Scheduled export listing failed:', error.message);
+    if (exportModuleMissing(error)) return moduleMissing(res, error);
     return res.status(500).json({ success: false, message: 'Could not load scheduled exports.' });
   }
 });
@@ -100,9 +118,10 @@ router.get('/executions', async (req, res) => {
     const status = typeof req.query.status === 'string' ? req.query.status : '';
     const limit = Math.min(200, Math.max(1, Number.parseInt(req.query.limit, 10) || 50));
     const executions = await listExportExecutions(status, limit);
-    return res.json({ success: true, data: { executions } });
+    return res.json({ success: true, data: executions });
   } catch (error) {
     console.error('Scheduled export history listing failed:', error.message);
+    if (exportModuleMissing(error)) return moduleMissing(res, error);
     return res.status(500).json({ success: false, message: 'Could not load scheduled export history.' });
   }
 });

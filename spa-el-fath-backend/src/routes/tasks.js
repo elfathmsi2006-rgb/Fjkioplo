@@ -7,7 +7,14 @@ const { enqueueTaskNotification } = require('../services/maintenanceNotification
 const router = express.Router();
 router.use(requireAuth);
 
-const MANAGE_ROLES = new Set(['admin', 'production_chief', 'workshop_head']);
+// Write authority matches the frontend: only administrator and production
+// chief may create, edit or delete work orders. Workshop heads retain machine/workshop
+// write permissions through their own APIs but cannot manage work orders.
+const MANAGE_ROLES = new Set(['admin', 'production_chief']);
+// Read authority is deliberately wider. Anyone who can open the Maintenance page must
+// be able to list work orders, otherwise the breakdown form has no work order to pick
+// from and the machine can never be derived from the selected work order.
+const VIEW_ROLES = new Set(['admin', 'production_chief', 'workshop_head']);
 const TASK_STATUSES = new Set(['PENDING', 'WAITING_PARTS', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']);
 const PRIORITIES = new Set(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
 const TYPES = new Set(['CORRECTIVE', 'PREVENTIVE']);
@@ -44,6 +51,12 @@ function normalizeDueDate(value) {
 
 function canManage(req) {
   return MANAGE_ROLES.has(req.user?.role);
+}
+
+// Listing and reading work orders is open to every role that may reach the
+// Maintenance page. Only writing is restricted to the manage roles.
+function canViewTasks(req) {
+  return VIEW_ROLES.has(req.user?.role);
 }
 
 // Only role IDs 1 (administrator) and 2 (production chief) may edit/delete work orders.
@@ -119,7 +132,7 @@ router.get('/', async (req, res) => {
     const offset = Math.max(0, Number(req.query.offset) || 0);
     connection = await pool.getConnection();
     let rows;
-    if (canManage(req)) {
+    if (canViewTasks(req)) {
       [rows] = await connection.execute(
         `SELECT t.*, m.code AS machine_code, m.name AS machine_name,
                 w.name AS workshop_name, tech.name AS technician_name,
@@ -170,7 +183,7 @@ router.get('/:id', async (req, res) => {
     connection = await pool.getConnection();
     const task = await getTaskDetails(connection, id);
     if (!task) return res.status(404).json({ success: false, message: 'Maintenance task not found.' });
-    if (!canManage(req)) {
+    if (!canViewTasks(req)) {
       if (req.user?.role !== 'maintenance_worker') {
         return res.status(403).json({ success: false, message: 'You do not have permission to view this task.' });
       }
@@ -278,6 +291,13 @@ router.put('/:id', async (req, res) => {
     }
     const current = currentRows[0];
 
+    // Terminal work orders are immutable. Once cancelled or completed, a task
+    // must never silently revert to an active state or regain open reservations.
+    if (['COMPLETED', 'CANCELLED'].includes(String(current.status)) && (!req.body?.status || String(req.body.status) !== String(current.status))) {
+      await connection.rollback();
+      return res.status(409).json({ success: false, message: 'Completed or cancelled work orders are final and cannot revert to an active state.' });
+    }
+
     // Completion must go through a submitted maintenance log so the task and its
     // maintenance history are committed together by /api/maintenance-logs/:id/submit.
     if (req.body?.status === 'COMPLETED' && current.status !== 'COMPLETED') {
@@ -314,6 +334,20 @@ router.put('/:id', async (req, res) => {
       [title, description, maintenanceType, values.machine_id, values.technician_id,
        values.workshop_id, priority, status, values.due_date, status, status, status, id]
     );
+    if (status === 'CANCELLED' && String(current.status) !== 'CANCELLED') {
+      // Release reserved work-order parts back to the open pool. Issued parts stay
+      // issued; only reservations that were never collected are cancelled.
+      const [released] = await connection.execute(
+        "UPDATE cmms_work_order_parts SET status = 'CANCELLED' WHERE task_id = ? AND status = 'RESERVED'",
+        [id]
+      );
+      if (released.affectedRows) {
+        await connection.execute(
+          'INSERT INTO audit_trail (table_name, record_id, action, actor_id, old_data, new_data) VALUES (?, ?, ?, ?, NULL, ?)',
+          ['cmms_work_order_parts', String(id), 'UPDATE', userId(req), JSON.stringify({ event: 'RESERVATIONS_RELEASED_ON_CANCEL', cancelled_reservations: released.affectedRows, task_id: id })]
+        );
+      }
+    }
     const updated = await getTaskDetails(connection, id);
     await connection.execute(
       'INSERT INTO audit_trail (table_name, record_id, action, actor_id, old_data, new_data) VALUES (?, ?, ?, ?, ?, ?)',
@@ -354,26 +388,65 @@ router.delete('/:id', async (req, res) => {
     const [rows] = await connection.execute('SELECT * FROM maintenance_tasks WHERE id = ? FOR UPDATE', [id]);
     if (!rows.length) { await connection.rollback(); return res.status(404).json({ success: false, message: 'Work order not found.' }); }
     const task = rows[0];
-    if (task.status === 'COMPLETED') {
-      await connection.rollback();
-      return res.status(409).json({ success: false, message: 'Completed work orders are retained for maintenance history and cannot be deleted.' });
-    }
-    const [linkedLogs] = await connection.execute('SELECT id FROM maintenance_logs WHERE task_id=? LIMIT 1', [id]);
-    const [linkedBreakdowns] = await connection.execute('SELECT id FROM cmms_breakdown_reports WHERE task_id=? LIMIT 1', [id]);
-    const [linkedOccurrences] = await connection.execute('SELECT id FROM cmms_pm_occurrences WHERE task_id=? LIMIT 1', [id]);
-    const [linkedChecklist] = await connection.execute('SELECT id FROM cmms_work_order_checklist_results WHERE task_id=? LIMIT 1', [id]);
-    const [linkedParts] = await connection.execute('SELECT id FROM cmms_work_order_parts WHERE task_id=? LIMIT 1', [id]);
-    if (linkedLogs.length || linkedBreakdowns.length || linkedOccurrences.length || linkedChecklist.length || linkedParts.length) {
-      await connection.rollback();
-      return res.status(409).json({ success: false, message: 'This work order has maintenance, breakdown, checklist, parts or preventive history and cannot be deleted. Cancel it instead to preserve traceability.' });
-    }
     await connection.execute(
       'INSERT INTO audit_trail (table_name, record_id, action, actor_id, old_data, new_data) VALUES (?, ?, ?, ?, ?, NULL)',
       ['maintenance_tasks', String(id), 'DELETE', userId(req), JSON.stringify(task)]
     );
+
+    // Parts already issued to the workshop consumed real stock. Reversing that
+    // movement is a separate workflow, so the work order must stay until then.
+    const [issuedParts] = await connection.execute(
+      "SELECT id FROM cmms_work_order_parts WHERE task_id=? AND status <> 'RESERVED' LIMIT 1",
+      [id]
+    );
+    if (issuedParts.length) {
+      await connection.rollback();
+      return res.status(409).json({ success: false, message: 'Spare parts were already issued for this work order. Return the parts before deleting it.' });
+    }
+
+    // Rows fully owned by the work order are removed together with it.
+    await connection.execute('DELETE FROM cmms_work_order_checklist_results WHERE task_id=?', [id]);
+    await connection.execute('DELETE FROM cmms_work_order_parts WHERE task_id=?', [id]);
+
+    // History rows (logs, breakdowns, preventive occurrences, notifications) survive the
+    // deletion and are detached instead. Their FK is ON DELETE SET NULL, so the rows
+    // stay intact; each detachment is recorded in the audit trail for traceability.
+    const detachable = [
+      ['maintenance_logs', 'maintenance log'],
+      ['cmms_breakdown_reports', 'breakdown report'],
+      ['cmms_pm_occurrences', 'preventive occurrence'],
+      ['maintenance_notifications', 'notification'],
+    ];
+    let detached = 0;
+    for (const [table] of detachable) {
+      let linked;
+      try {
+        [linked] = await connection.execute(`SELECT id FROM \`${table}\` WHERE task_id=?`, [id]);
+      } catch (lookupError) {
+        // Optional tables from later migrations: skip them when they are not deployed.
+        if (lookupError.code === 'ER_NO_SUCH_TABLE') continue;
+        throw lookupError;
+      }
+      if (!linked.length) continue;
+      await connection.execute(`UPDATE \`${table}\` SET task_id=NULL WHERE task_id=?`, [id]);
+      for (const row of linked) {
+        // audit_trail.action is an enum: the child row was updated, not deleted.
+        await connection.execute(
+          'INSERT INTO audit_trail (table_name, record_id, action, actor_id, old_data, new_data) VALUES (?, ?, ?, ?, ?, NULL)',
+          [table, String(row.id), 'UPDATE', userId(req), JSON.stringify({ detached_from_task_id: id, detached_from_task_title: task.title }), JSON.stringify({ task_id: null })]
+        );
+        detached += 1;
+      }
+    }
+
     await connection.execute('DELETE FROM maintenance_tasks WHERE id = ?', [id]);
     await connection.commit();
-    return res.json({ success: true, message: 'Work order deleted.' });
+    return res.json({
+      success: true,
+      message: detached
+        ? `Work order deleted. ${detached} maintenance history record(s) were preserved and detached from it.`
+        : 'Work order deleted.',
+    });
   } catch (error) {
     if (connection) await connection.rollback().catch(() => {});
     console.error('Failed to delete work order:', error.message);

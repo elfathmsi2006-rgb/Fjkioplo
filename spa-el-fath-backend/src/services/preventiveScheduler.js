@@ -36,7 +36,7 @@ async function generateDuePreventiveTasks() {
            LEFT JOIN (SELECT technician_id,COUNT(*) AS open_count FROM maintenance_tasks
                       WHERE status IN ('PENDING','IN_PROGRESS') AND technician_id IS NOT NULL GROUP BY technician_id) w
              ON w.technician_id=t.id
-           WHERE t.availability_status='available'
+           WHERE t.availability_status='available' AND t.active<>0 AND t.attendance_status='present'
            ORDER BY COALESCE(w.open_count,0) ASC,t.id ASC LIMIT 1 FOR UPDATE`
         );
         const technicianId = technicians.length ? technicians[0].id : null;

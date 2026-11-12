@@ -62,6 +62,64 @@ test('breakdown reports are audited and enqueue technician email notifications',
   assert.match(notifications, /Severity: \$\{safeText\(report\.severity/);
 });
 
+test('breakdown reports fall back to the open auto-created corrective work order', () => {
+  const suite = read('spa-el-fath-backend', 'src', 'routes', 'maintenanceSuite.js');
+  assert.match(suite, /let task=req\.body\?\.taskId/);
+  assert.match(suite, /SELECT id FROM maintenance_tasks WHERE machine_id=\? AND maintenance_type='CORRECTIVE' AND status NOT IN \('COMPLETED','CANCELLED'\)/);
+  assert.match(suite, /ORDER BY id DESC LIMIT 1 FOR UPDATE/);
+  assert.match(suite, /if\(cand\.length\) task=cand\[0\]\.id;/);
+});
+
+test('preventive scheduler assigns only active, present and available technicians', () => {
+  const scheduler = read('spa-el-fath-backend', 'src', 'services', 'preventiveScheduler.js');
+  assert.match(scheduler, /availability_status='available' AND t\.active<>0 AND t\.attendance_status='present'/);
+  assert.match(scheduler, /uq_cmms_pm_occurrence|existing\.length/);
+});
+
+test('corrective machine state respects remaining open corrective work', () => {
+  const logs = read('spa-el-fath-backend', 'src', 'routes', 'maintenanceLogs.js');
+  assert.match(logs, /SELECT COUNT\(\*\) AS open_count FROM maintenance_tasks WHERE machine_id = \? AND maintenance_type = 'CORRECTIVE' AND status NOT IN/);
+  assert.match(logs, /remaining > 0 \? 'maintenance' : 'working'/);
+});
+
+test('work order creation permission matches frontend authority', () => {
+  const tasks = read('spa-el-fath-backend', 'src', 'routes', 'tasks.js');
+  assert.match(tasks, /const MANAGE_ROLES = new Set\(\['admin', 'production_chief'\]\)/);
+});
+
+test('forward-only migration is idempotent and covers missing recovery elements', () => {
+  const sql = read('spa-el-fath-backend', 'sql', '202611150001_phase1_missing_schema_forward.sql');
+  assert.match(sql, /CALL cmms_recovery_add_column_if_missing\('users','token_version'/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS password_reset_tokens/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS revoked_sessions/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS cmms_hidden_failure_findings/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS cmms_maintenance_export_schedules/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS cmms_maintenance_export_executions/);
+  assert.doesNotMatch(sql, /DROP TABLE\s/i);
+  assert.doesNotMatch(sql, /schema_migrations/i);
+});
+
+test('migration runner includes the additive forward-only recovery file', () => {
+  const runner = read('spa-el-fath-backend', 'apply-maintenance-migrations.cjs');
+  assert.match(runner, /202611150001_phase1_missing_schema_forward\.sql/);
+  assert.match(runner, /checksum drift:/);
+});
+
+test('analytics page keeps the four industrial bar charts sourced from real API data', () => {
+  const page = read('spa-el-fath-frontend', 'src', 'pages', 'AnalyticsPage.tsx');
+  assert.match(page, /BarChart layout="vertical" data=\{paretoBars\}/);
+  assert.match(page, /data=\{workloadBars\}/);
+  assert.match(page, /data=\{pmBars\}/);
+  assert.match(page, /data=\{yieldBars\}/);
+  assert.match(page, /\{profile\?\.role === 'admin' && <article className="panel analytics-production-summary">/);
+});
+test('server analytics discloses unsupported KPIs and keeps unknown null', () => {
+  const suite = read('spa-el-fath-backend', 'src', 'routes', 'maintenanceSuite.js');
+  assert.match(suite, /mtbf:'Not calculated: this schema does not provide validated machine operating exposure/);
+  assert.match(suite, /availability:'Not calculated: scheduled production\/operating hours are not stored/);
+  assert.match(suite, /due\?Math\.round\(completed\/due\*10000\)\/100:null/);
+  assert.match(suite, /mttrHours:num\(logStats\.mttr_hours\)/);
+});
 test('maintenance UI exposes preventive plans, checklist results, breakdowns, meter/condition readings and work-order parts', () => {
   const ui = read('spa-el-fath-frontend', 'src', 'components', 'maintenance', 'MaintenanceSuiteTools.tsx');
   for (const route of ['/api/operations/preventive-plans', '/api/maintenance-suite/breakdowns', '/api/maintenance-suite/meter-readings', '/api/maintenance-suite/condition-readings', '/parts/reserve', '/checklist-results', '/manual-links']) {
